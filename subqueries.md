@@ -17,7 +17,7 @@ MIN_SIZE     = 30                           # min papers per micro cluster
 ## Quantum Computing
 
 Used as a test case.  
-From `q20260629` parent set
+From `q20260629` parent set. 
 
 **QUERY PARAMETERS**
 
