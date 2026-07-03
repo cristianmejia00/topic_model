@@ -1,5 +1,5 @@
 """
-subquery_search.py
+subquery_search_by_topic.py
 ==================
 Find the micro clusters that match a free-text query (a word, phrase, or a whole
 paragraph), then export focused subsets of the dataset to S3 for that query.

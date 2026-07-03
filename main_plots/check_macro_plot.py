@@ -1,5 +1,12 @@
 import awswrangler as wr
 import matplotlib.pyplot as plt
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from macro_palette import color_for_macro, load_macro_color_map
 
 # same values as in plot_clusters.py
@@ -22,5 +29,6 @@ plt.scatter(micro.x[hit],  micro.y[hit],  s=4, c=target_color, alpha=0.8, raster
 plt.gca().set_aspect("equal")
 plt.axis("off")
 plt.title(f"macro {target}")
-plt.savefig("macro_check.png", dpi=200, bbox_inches="tight")
+out_png = Path(__file__).resolve().parent / "macro_check.png"
+plt.savefig(out_png, dpi=200, bbox_inches="tight")
 print(f"highlighted macro {target} ({target_color}): {hit.sum():,} of {len(micro):,} micro clusters")

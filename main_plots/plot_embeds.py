@@ -19,7 +19,7 @@ IMPORTANT:
     * Outputs go to a separate prefix: {IN_DIR}images/  so nothing is overwritten.
 
 Output schema mirrors the pipeline (cluster, keywords, x_coords, y_coords), so
-plot_clusters.py can render it with a single change: point IN_DIR at .../images/.
+main_plots/plot_images.py can render it with a single change: point IN_DIR at .../images/.
 
 Requires: sentence-transformers, umap-learn, numpy, pandas, awswrangler, pyarrow
 """
@@ -209,7 +209,7 @@ def main():
         save_level(level, ids, keywords[level], coords[:, 0], coords[:, 1], vecs)
 
     print(f"\n[done] viz-only coordinates written under {OUT_DIR}")
-    print(f"       to render: set IN_DIR = \"{OUT_DIR}\" in plot_clusters.py "
+    print(f"       to render: set IN_DIR = \"{OUT_DIR}\" in main_plots/plot_images.py "
           f"(keep MICRO_REPORT unchanged) and re-run it.")
 
 

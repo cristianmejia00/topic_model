@@ -22,6 +22,7 @@ import json
 import math
 import mimetypes
 from pathlib import Path
+import sys
 from typing import Any
 from urllib.parse import urlparse
 
@@ -29,6 +30,11 @@ import awswrangler as wr
 import boto3
 import pandas as pd
 import pycountry
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+  sys.path.insert(0, str(ROOT))
+
 from macro_palette import color_for_macro, load_macro_color_map
 
 

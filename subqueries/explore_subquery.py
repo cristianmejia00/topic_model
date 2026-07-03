@@ -1,16 +1,16 @@
 """
 explore_subquery.py
 ===================
-Quickly browse the S3 outputs of subquery_search.py for one QUERY_FOLDER.
+Quickly browse the S3 outputs of a subquery search run for one QUERY_FOLDER.
 
 Two ways to use it:
 
   Terminal (interactive):
-      python explore_subquery.py
+      python subqueries/explore_subquery.py
       # prints a summary, then prompts for a micro id (or 'meso N' / 'macro N')
 
   Notebook / import:
-      from explore_subquery import Explorer
+      from subqueries.explore_subquery import Explorer
       e = Explorer("quantum_computing")
       e.summary()            # ranked table of matched micro clusters
       e.micro(12345)         # full profile: stats, keywords, top titles, countries, insts

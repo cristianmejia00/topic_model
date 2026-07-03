@@ -1,5 +1,5 @@
 """
-subquery_search_passtrough.py
+subquery_search_passthrough.py
 ============================
 No-filter subquery export: use all micro clusters and write the same output
 artifacts as the topic and filter search scripts.

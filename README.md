@@ -1,86 +1,79 @@
-# Topic Model — BERTopic Cluster Pipeline
+# Topic Model — Pipeline Guide
 
-End-to-end pipeline that retrofits BERTopic onto pre-existing hierarchical cluster
-assignments (micro / meso / macro) to extract keywords, cluster embeddings, and 2D
-coordinates, then renders a publication-cluster map.
+This repository contains the full workflow for hierarchical clustering, BERTopic
+retrofit, plotting, and subquery report generation.
 
----
+## Main Scripts
 
-## What each script does
+- `annex/parallel_louvain.ipynb`
+  - Computes robust node-level hierarchy assignments (`node_id`, `micro_cluster`,
+    `meso_cluster`, `macro_cluster`) from citation graphs.
+- `create_athena_reports.py`
+  - Builds Athena tables in order: `article_report`, `cluster_report_micro`,
+    `cluster_report_meso`, `cluster_report_macro`.
+- `audit_athena_hierarchy.py`
+  - Audits parent coverage and one-to-one hierarchy consistency directly in Athena.
+- `cluster_bertopic.py`
+  - Generates BERTopic keywords, embeddings, and shared 2D coordinates for
+    micro/meso/macro levels.
 
-### 1. `cluster_bertopic.py`
+## Plot Scripts
 
-Extracts topic keywords and 2D coordinates for a three-level cluster hierarchy
-(micro → meso → macro) stored in AWS Athena / S3.
+- `main_plots/plot_images.py`
+  - Renders `main_plots/cluster_map.png` and `main_plots/cluster_map.pdf`.
+- `main_plots/plot_embeds.py`
+  - Optional visualization-only embedding pass for tighter color coherence.
+- `main_plots/check_macro_plot.py`
+  - Optional diagnostic macro highlight plot (`main_plots/macro_check.png`).
 
-**Steps performed internally:**
+## Subquery Scripts
 
-| Step | What happens |
-|------|-------------|
-| **Extract** | Queries Athena for the top-1 % most-cited papers per micro cluster (floor 5), pulling `id`, `title`, and all three cluster columns. |
-| **Embed** | Encodes every representative title once with `all-MiniLM-L6-v2` (sentence-transformers). The embedding matrix is shared across all three levels. |
-| **Retrofit BERTopic** | Runs a manual BERTopic fit at each level (micro, meso, macro) with predefined labels, bypassing UMAP/HDBSCAN to produce level-relative c-TF-IDF keywords and cluster-mean embeddings. |
-| **Weighted rollup** *(optional)* | Re-derives meso/macro cluster vectors as a publications-weighted mean of their micro centroids so larger clusters carry proportionally more weight. |
-| **2D reduction** | Fits a single UMAP reducer on micro cluster embeddings and transforms meso/macro into the same 2D space. |
-| **Save** | Writes Parquet files to S3 (`{OUT_DIR}{level}/`) with columns `cluster`, `keywords`, `x_coords`, `y_coords`, plus raw `.npy` caches locally under `_bertopic_cache/`. |
+- `subqueries/subquery_search_by_topic.py`
+  - Topic-query retrieval over micro centroids.
+- `subqueries/subquery_search_by_filters.py`
+  - Numeric-filter retrieval (supports multiple AND filters).
+- `subqueries/subquery_search_passthrough.py`
+  - No-filter export over all micro clusters.
+- `subqueries/name_clusters.py`
+  - Names micro clusters in a selected subquery.
+- `subqueries/generate_subquery_report.py`
+  - Builds/publishes HTML report for one subquery.
+- `subqueries/explore_subquery.py`
+  - Terminal explorer for generated subquery outputs.
 
-**Outputs (S3):**
+## Order of Code Execution
 
-```
-{OUT_DIR}
-  documents/            # per-paper embeddings
-  micro/                # cluster, keywords, x_coords, y_coords
-  meso/
-  macro/
-  micro_embeddings/     # cluster-level embedding vectors
-  meso_embeddings/
-  macro_embeddings/
-```
+### A) Core Pipeline
 
----
+1. `annex/parallel_louvain.ipynb`
+2. `create_athena_reports.py --overwrite`
+3. `audit_athena_hierarchy.py`
+4. `cluster_bertopic.py`
+5. `main_plots/plot_images.py`
 
-### 2. `topic_plot.py`
+Optional diagnostics after step 5:
 
-Reads the S3 outputs from `bertopic.py` and the micro cluster report, then renders a
-hierarchical cluster map as a high-resolution PNG and a vector PDF.
+1. `main_plots/check_macro_plot.py`
+2. `main_plots/plot_embeds.py` (then rerun `main_plots/plot_images.py` against images output)
 
-**What is plotted:**
+### B) Subquery Pipeline
 
-| Layer | What it shows |
-|-------|--------------|
-| **Point cloud** | Every micro cluster centroid, coloured by its macro cluster. |
-| **Meso centroids** | Medium markers, sized by number of micro clusters within, same colour as their macro parent. |
-| **Macro centroids** | Large markers with bold keyword labels, outlined in black. |
-| **Legend** | Shown when there are ≤ 25 macro clusters. |
-
-**Outputs (local):**
-
-```
-cluster_map.png   # rasterised at 220 DPI
-cluster_map.pdf   # vector (labels remain crisp at any zoom)
-```
-
----
-
-## Order of execution
-
-```
-1. cluster_bertopic.py  →  produces S3 Parquet outputs (keywords + 2D coords)
-2. topic_plot.py        →  reads those outputs and writes cluster_map.png / .pdf
-```
-
----
+1. Run one selector:
+   - `subqueries/subquery_search_by_topic.py`
+   - or `subqueries/subquery_search_by_filters.py`
+   - or `subqueries/subquery_search_passthrough.py`
+2. `subqueries/name_clusters.py`
+3. `subqueries/generate_subquery_report.py`
+4. `subqueries/explore_subquery.py`
 
 ## Setup
 
 ### Prerequisites
 
 - Python 3.9+
-- AWS credentials configured (environment variables, `~/.aws/credentials`, or IAM role)
-  with read access to the source Athena database and read/write access to the S3 output
-  bucket.
+- AWS credentials configured with Athena read access and S3 read/write access.
 
-### Create the virtual environment
+### Environment
 
 ```bash
 python3 -m venv .venv
@@ -88,48 +81,34 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Configuration
-
-Both scripts have a `CONFIG` section near the top. At minimum, update these values in
-`cluster_bertopic.py` before running:
-
-| Variable | Description |
-|----------|-------------|
-| `ATHENA_DATABASE` | Athena database containing the `article_report` table. |
-| `S3_STAGING` | S3 path used by Athena for query staging output. |
-| `MICRO_REPORT` | S3 path to the micro cluster report Parquet (supplies publication counts). |
-| `OUT_DIR` | S3 prefix where all pipeline outputs are written. |
-
-`topic_plot.py` reads from `IN_DIR` and `MICRO_REPORT` which should match the values
-set in `bertopic.py`.
-
----
-
-## Running
+## Running (Quick Start)
 
 ```bash
-# Activate the environment first
 source .venv/bin/activate
 
-# Step 1 — extract keywords and 2D coordinates (writes to S3)
+# Core pipeline
+python create_athena_reports.py --overwrite
+python audit_athena_hierarchy.py
 python cluster_bertopic.py
+python main_plots/plot_images.py
 
-# Step 2 — render the cluster map (writes cluster_map.png and cluster_map.pdf locally)
-python topic_plot.py
+# Subquery example (topic-based)
+python subqueries/subquery_search_by_topic.py
+python subqueries/name_clusters.py
+python subqueries/generate_subquery_report.py
+python subqueries/explore_subquery.py
 ```
-
----
 
 ## Dependencies
 
-Key libraries (pinned versions in `requirements.txt`):
+Key libraries (pinned in `requirements.txt`):
 
-| Library | Purpose |
-|---------|---------|
-| `bertopic` | c-TF-IDF keyword extraction and topic modelling |
-| `sentence-transformers` | MiniLM title embeddings |
-| `umap-learn` | 2D dimensionality reduction |
-| `scikit-learn` | `CountVectorizer` and supporting utilities |
-| `awswrangler` | Athena queries and S3 Parquet I/O |
-| `pandas` / `numpy` / `pyarrow` | Data wrangling and serialisation |
-| `matplotlib` | Cluster map rendering |
+- bertopic
+- sentence-transformers
+- umap-learn
+- scikit-learn
+- awswrangler
+- pandas
+- numpy
+- pyarrow
+- matplotlib

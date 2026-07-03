@@ -26,6 +26,7 @@ import os
 import io
 import json
 import time
+from pathlib import Path
 import concurrent.futures as cf
 import pandas as pd
 
@@ -36,7 +37,8 @@ QUERY_FOLDER = "quantum_computing"
 
 SUBQUERIES_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
 KEYWORDS_DIR    = "s3://openalex-outputs/classification/q20260629/bertopic/"   # micro keywords
-KEY_FILE        = ".key"
+ROOT_DIR        = Path(__file__).resolve().parent.parent
+KEY_FILE        = ROOT_DIR / ".key"
 
 # Model names change often -- verify against platform.openai.com/docs/models.
 # A small model is plenty for labeling given rich context; bump to a flagship

@@ -21,12 +21,19 @@ Requires: matplotlib, pandas, numpy, awswrangler, pyarrow
 """
 
 from __future__ import annotations
+from pathlib import Path
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from macro_palette import color_for_macro, load_macro_color_map
 
 # ----------------------------------------------------------------------------
@@ -35,8 +42,9 @@ from macro_palette import color_for_macro, load_macro_color_map
 IN_DIR       = "s3://openalex-outputs/classification/q20260629/bertopic/images/"
 MICRO_REPORT = "s3://openalex-outputs/classification/q20260629/cluster_report_micro/"
 
-OUT_PNG = "cluster_map.png"
-OUT_PDF = "cluster_map.pdf"
+OUT_DIR = Path(__file__).resolve().parent
+OUT_PNG = OUT_DIR / "cluster_map.png"
+OUT_PDF = OUT_DIR / "cluster_map.pdf"
 DPI     = 220
 
 # micro point cloud
