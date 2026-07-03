@@ -46,7 +46,7 @@ QUERY_FOLDER = "quantum_computing"
 SUBQUERIES_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
 KEYWORDS_DIR = "s3://openalex-outputs/classification/q20260629/bertopic/"
 MACRO_NAME_PATH = "s3://openalex-outputs/classification/q20260629/cluster_name_macro/"
-LOCAL_DOCS_ROOT = Path("docs")
+LOCAL_DOCS_ROOT = Path("../docs")
 
 TOP_TITLES = 10
 
