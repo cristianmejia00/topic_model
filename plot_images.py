@@ -101,13 +101,6 @@ def build_plot(micro, meso, macro, palette, out_png=OUT_PNG, out_pdf=OUT_PDF):
     ax.scatter(m["x"], m["y"], s=POINT_SIZE, c=micro_colors,
                alpha=POINT_ALPHA, linewidths=0, rasterized=True, zorder=1)
 
-    # --- meso centroids -----------------------------------------------------
-    if len(meso):
-        meso_colors = np.array([palette.get(k, (0.5, 0.5, 0.5)) for k in meso["macro"]])
-        meso_sz = scale_sizes(meso["size"], *MESO_SIZE_RANGE)
-        ax.scatter(meso["x"], meso["y"], s=meso_sz, c=meso_colors,
-                   edgecolors="white", linewidths=0.4, alpha=0.9, zorder=3)
-
     # --- macro centroids (labeled) -----------------------------------------
     macro_colors = np.array([palette[k] for k in macro["macro"]])
     macro_sz = scale_sizes(macro["size"], *MACRO_SIZE_RANGE)
