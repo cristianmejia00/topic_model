@@ -26,8 +26,8 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 from matplotlib.lines import Line2D
+from macro_palette import color_for_macro, load_macro_color_map
 
 # ----------------------------------------------------------------------------
 # CONFIG
@@ -60,10 +60,12 @@ TITLE    = "Publication cluster map — micro coloured by macro"
 # ----------------------------------------------------------------------------
 # HELPERS
 # ----------------------------------------------------------------------------
-def make_palette(keys):
-    """Evenly spaced, equally saturated hues -> distinct and readable on white."""
-    n = max(1, len(keys))
-    return {k: mcolors.hsv_to_rgb((i / n, 0.62, 0.85)) for i, k in enumerate(keys)}
+def load_palette(keys):
+    palette = {}
+    color_map = load_macro_color_map()
+    for k in keys:
+        palette[k] = color_for_macro(int(k), color_map)
+    return palette
 
 
 def short_keywords(s, n=LABEL_KEYWORDS_N):
@@ -83,14 +85,13 @@ def scale_sizes(counts, lo, hi):
 # ----------------------------------------------------------------------------
 # PLOT  (pure function of prepared dataframes -> easy to test)
 # ----------------------------------------------------------------------------
-def build_plot(micro, meso, macro, out_png=OUT_PNG, out_pdf=OUT_PDF):
+def build_plot(micro, meso, macro, palette, out_png=OUT_PNG, out_pdf=OUT_PDF):
     """
     micro : columns [x, y, macro]
     meso  : columns [x, y, macro, size, keywords]
     macro : columns [x, y, macro, size, keywords]
     """
     macro_ids = sorted(macro["macro"].dropna().unique())
-    palette   = make_palette(macro_ids)
 
     fig, ax = plt.subplots(figsize=FIG_SIZE)
 
@@ -203,7 +204,9 @@ def prepare_frames():
 
 def main():
     micro, meso, macro = prepare_frames()
-    build_plot(micro, meso, macro)
+    macro_ids = sorted(macro["macro"].dropna().unique())
+    palette = load_palette(macro_ids)
+    build_plot(micro, meso, macro, palette)
 
 
 if __name__ == "__main__":

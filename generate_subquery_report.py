@@ -29,6 +29,7 @@ import awswrangler as wr
 import boto3
 import pandas as pd
 import pycountry
+from macro_palette import color_for_macro, load_macro_color_map
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,10 @@ def compose_macro_label(macro_id: Any, kw: str) -> str:
   if kw_short:
     return f"{mid}: {kw_short}"
   return str(mid)
+
+
+def load_macro_colors() -> dict[int, str]:
+  return load_macro_color_map()
 
 
 def pick_col(df: pd.DataFrame, candidates: list[str], required: bool = False) -> str | None:
@@ -103,6 +108,7 @@ def build_plot_data(summary_rows: list[dict[str, Any]]) -> dict[str, Any]:
     macro = str(r.get("macro_cluster_label", "Unknown"))
     if macro not in by_macro:
       by_macro[macro] = {
+        "color": r.get("macro_color", "#7f7f7f"),
         "x": [],
         "y": [],
         "size": [],
@@ -453,6 +459,7 @@ def build_html(report_json: str) -> str:
           text: v.text,
           customdata: v.custom,
           marker: {{
+            color: v.color || "#7f7f7f",
             size: sizes,
             sizemode: "diameter",
             opacity: 0.8,
@@ -548,6 +555,7 @@ def main() -> None:
     names = read_subset(out_base, "cluster_names", required=False)
     kw_micro = read_subset(KEYWORDS_DIR, "micro", required=False)
     kw_macro = read_subset(KEYWORDS_DIR, "macro", required=False)
+    macro_color_map = load_macro_colors()
 
     micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
     pub_col = pick_col(micro_rep, ["publications"], required=True)
@@ -670,6 +678,7 @@ def main() -> None:
 
         macro_id = int(getattr(r, macro_col)) if macro_col and pd.notna(getattr(r, macro_col)) else None
         macro_label = compose_macro_label(macro_id if macro_id is not None else "Unknown", macro_kw_map.get(macro_id, ""))
+        macro_color = color_for_macro(int(macro_id), macro_color_map) if macro_id is not None else "#7f7f7f"
 
         clusters.append(
             {
@@ -684,6 +693,7 @@ def main() -> None:
                 "ranked_citation_score": None if math.isnan(rank_score) else rank_score,
                 "macro_cluster": macro_id if macro_id is not None else "Unknown",
                 "macro_cluster_label": macro_label,
+                "macro_color": macro_color,
                 "top_titles": papers_by_micro.get(mid, []),
                 "countries": countries_by_micro.get(mid, []),
                 "institutions": insts_by_micro.get(mid, []),
