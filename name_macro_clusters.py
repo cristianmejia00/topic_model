@@ -268,8 +268,12 @@ def enforce_coverage_and_uniqueness(result: pd.DataFrame, expected_ids: list[int
 
 
 def main() -> None:
+    print(f"[config] INCLUDE_MESO_CONTEXT={INCLUDE_MESO_CONTEXT}")
     print("[load] reading macro inputs from S3")
     macro = prepare_inputs()
+    meso_rows = int(macro["meso_context"].astype(str).str.strip().ne("").sum())
+    meso_active = meso_rows > 0
+    print(f"[config] meso context used in payload: {meso_active} ({meso_rows}/{len(macro)} macros)")
     macro_ids = sorted(macro["macro_cluster"].astype("int64").tolist())
     macro_kw_map = dict(zip(macro["macro_cluster"].astype("int64"), macro["macro_keywords"].fillna("")))
     print(f"[load] macro clusters: {len(macro_ids):,}")
