@@ -39,21 +39,25 @@ QUERY_FOLDER = "quantum_computing"
 
 SUBQUERIES_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
 KEYWORDS_DIR = "s3://openalex-outputs/classification/q20260629/bertopic/"
+MACRO_NAME_PATH = "s3://openalex-outputs/classification/q20260629/cluster_name_macro/"
 LOCAL_DOCS_ROOT = Path("docs")
 
 TOP_TITLES = 10
 
 
-def compose_macro_label(macro_id: Any, kw: str) -> str:
-  mid = sanitize_text(macro_id) if macro_id is not None else "Unknown"
-  kw_short = ", ".join([p.strip() for p in sanitize_text(kw).split(",") if p.strip()][:4])
-  if kw_short:
-    return f"{mid}: {kw_short}"
-  return str(mid)
-
-
 def load_macro_colors() -> dict[int, str]:
   return load_macro_color_map()
+
+
+def load_macro_names() -> dict[int, str]:
+  try:
+    p = wr.s3.read_parquet(MACRO_NAME_PATH)
+    if {"macro_cluster", "name"}.issubset(p.columns):
+      return dict(zip(p["macro_cluster"].astype("int64"), p["name"].astype(str).str.strip()))
+    print("[warn] macro name table missing expected columns")
+  except Exception as exc:
+    print(f"[warn] could not read macro names at {MACRO_NAME_PATH}: {exc}")
+  return {}
 
 
 def pick_col(df: pd.DataFrame, candidates: list[str], required: bool = False) -> str | None:
@@ -83,8 +87,16 @@ def iso2_to_country_name(value: Any) -> str:
     if len(raw) == 2 and raw.isalpha():
         hit = pycountry.countries.get(alpha_2=raw.upper())
         if hit is not None:
-            return hit.name
+            raw = hit.name
+    # Normalize to preferred display naming.
+    if raw == "Taiwan, Province of China":
+        return "Taiwan"
     return raw
+
+
+def is_blank_like(value: Any) -> bool:
+    text = sanitize_text(value).strip().lower()
+    return text in {"", "none", "nan", "null", "<na>", "na", "n/a"}
 
 
 def sanitize_text(value: Any) -> str:
@@ -247,6 +259,7 @@ def build_html(report_json: str) -> str:
     }}
     th, td {{ border: 1px solid var(--line); padding: 7px 8px; text-align: left; }}
     th {{ background: #f3f7fa; }}
+    tr.highlight-row td {{ background: #fff3a6; }}
     .tab2-section {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -311,6 +324,15 @@ def build_html(report_json: str) -> str:
       return `<table><thead>${{head}}</thead><tbody>${{body}}</tbody></table>`;
     }}
 
+    function tableHtmlRows(headers, rows) {{
+      const head = `<tr>${{headers.map(h => `<th>${{h}}</th>`).join("")}}</tr>`;
+      const body = rows.map(r => {{
+        const cls = r.highlight ? ' class="highlight-row"' : "";
+        return `<tr${{cls}}><td>${{r.label}}</td><td>${{fmtInt(r.freq)}}</td></tr>`;
+      }}).join("");
+      return `<table><thead>${{head}}</thead><tbody>${{body}}</tbody></table>`;
+    }}
+
     function buildClusterList() {{
       const ul = document.getElementById("cluster-list");
       ul.innerHTML = "";
@@ -338,8 +360,21 @@ def build_html(report_json: str) -> str:
         `<li>[${{fmtInt(p.citations)}} cites${{p.publication_year ? " | " + p.publication_year : ""}}] ${{p.title}}</li>`
       ).join("");
 
-      const countryRows = (cluster.countries || []).map(r => [r.country, fmtInt(r.freq)]);
-      const instRows = (cluster.institutions || []).map(r => [r.institution, fmtInt(r.freq)]);
+      const countryRows = (cluster.countries || [])
+        .filter(r => (r.country || "").trim().length > 0)
+        .map(r => ({
+          label: r.country,
+          freq: r.freq,
+          highlight: String(r.country || "").toLowerCase() === "japan",
+        }));
+
+      const instRows = (cluster.institutions || [])
+        .filter(r => (r.institution || "").trim().length > 0)
+        .map(r => ({
+          label: r.institution,
+          freq: r.freq,
+          highlight: String(r.institution || "").toLowerCase().includes("tokyo"),
+        }));
 
       const detail = document.getElementById("cluster-detail");
       detail.innerHTML = `
@@ -355,12 +390,12 @@ def build_html(report_json: str) -> str:
 
         <div class=\"section\">
           <h3>Countries</h3>
-          ${{tableHtml(["Country", "Count"], countryRows)}}
+          ${{tableHtmlRows(["Country", "Count"], countryRows)}}
         </div>
 
         <div class=\"section\">
           <h3>Institutions</h3>
-          ${{tableHtml(["Institution", "Count"], instRows)}}
+          ${{tableHtmlRows(["Institution", "Count"], instRows)}}
         </div>
       `;
     }}
@@ -376,6 +411,8 @@ def build_html(report_json: str) -> str:
         { key: "avg_publication_year", label: "Avg Publication Year", type: "number" },
         { key: "avg_citation", label: "Avg Citation", type: "number" },
         { key: "ranked_citation_score", label: "Ranked Citation", type: "number" },
+        { key: "recency", label: "Recency", type: "number" },
+        { key: "japan", label: "Japan", type: "number" },
       ];
 
       const state = { key: "display_id", dir: "asc" };
@@ -396,6 +433,8 @@ def build_html(report_json: str) -> str:
         if (col.key === "avg_publication_year") return fmtNumber(v, 1);
         if (col.key === "avg_citation") return fmtNumber(v, 2);
         if (col.key === "ranked_citation_score") return fmtNumber(v, 3);
+        if (col.key === "recency") return fmtNumber(v, 3);
+        if (col.key === "japan") return fmtInt(v);
         return v ?? "";
       }
 
@@ -554,8 +593,8 @@ def main() -> None:
     insts = read_subset(out_base, "top_institutions", required=True)
     names = read_subset(out_base, "cluster_names", required=False)
     kw_micro = read_subset(KEYWORDS_DIR, "micro", required=False)
-    kw_macro = read_subset(KEYWORDS_DIR, "macro", required=False)
     macro_color_map = load_macro_colors()
+    macro_name_map = load_macro_names()
 
     micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
     pub_col = pick_col(micro_rep, ["publications"], required=True)
@@ -565,6 +604,8 @@ def main() -> None:
         ["yearly_rank_citations", "ranked_citation", "ranked_citation_score"],
         required=False,
     )
+    recency_col = pick_col(micro_rep, ["recency_py", "recency"], required=False)
+    japan_col = pick_col(micro_rep, ["japan_count", "japan"], required=False)
     macro_col = pick_col(micro_rep, ["macro_cluster"], required=False)
 
     micro_rep = micro_rep.copy()
@@ -574,6 +615,10 @@ def main() -> None:
       micro_rep[avg_cit_col] = pd.to_numeric(micro_rep[avg_cit_col], errors="coerce")
     if rank_col:
       micro_rep[rank_col] = pd.to_numeric(micro_rep[rank_col], errors="coerce")
+    if recency_col:
+      micro_rep[recency_col] = pd.to_numeric(micro_rep[recency_col], errors="coerce")
+    if japan_col:
+      micro_rep[japan_col] = pd.to_numeric(micro_rep[japan_col], errors="coerce")
 
     papers = papers.copy()
     papers["micro_cluster"] = papers["micro_cluster"].astype("int64")
@@ -613,12 +658,6 @@ def main() -> None:
       k["cluster"] = k["cluster"].astype("int64")
       kw_map = dict(zip(k["cluster"], k["keywords"].fillna("")))
 
-    macro_kw_map: dict[int, str] = {}
-    if not kw_macro.empty and {"cluster", "keywords"}.issubset(kw_macro.columns):
-      mk = kw_macro.copy()
-      mk["cluster"] = mk["cluster"].astype("int64")
-      macro_kw_map = dict(zip(mk["cluster"], mk["keywords"].fillna("")))
-
     merged = micro_rep.merge(avg_year_by_micro, left_on=micro_id_col, right_on="micro_cluster", how="left")
     if "micro_cluster_y" in merged.columns:
         merged = merged.drop(columns=["micro_cluster_y"])
@@ -648,8 +687,9 @@ def main() -> None:
     c_sorted = countries.sort_values(["micro_cluster", "freq", "country"], ascending=[True, False, True])
     for mid, grp in c_sorted.groupby("micro_cluster"):
         countries_by_micro[int(mid)] = [
-            {"country": sanitize_text(r.country), "freq": int(r.freq) if pd.notna(r.freq) else 0}
+        {"country": sanitize_text(r.country), "freq": int(r.freq) if pd.notna(r.freq) else 0}
             for r in grp.itertuples(index=False)
+        if not is_blank_like(getattr(r, "country", ""))
         ]
 
     insts_by_micro: dict[int, list[dict[str, Any]]] = {}
@@ -675,9 +715,11 @@ def main() -> None:
         avg_cit = float(getattr(r, avg_cit_col)) if avg_cit_col and pd.notna(getattr(r, avg_cit_col)) else float("nan")
         rank_score = float(getattr(r, rank_col)) if rank_col and pd.notna(getattr(r, rank_col)) else float("nan")
         avg_year = float(r.avg_publication_year) if pd.notna(r.avg_publication_year) else float("nan")
+        recency = float(getattr(r, recency_col)) if recency_col and pd.notna(getattr(r, recency_col)) else float("nan")
+        japan = float(getattr(r, japan_col)) if japan_col and pd.notna(getattr(r, japan_col)) else float("nan")
 
         macro_id = int(getattr(r, macro_col)) if macro_col and pd.notna(getattr(r, macro_col)) else None
-        macro_label = compose_macro_label(macro_id if macro_id is not None else "Unknown", macro_kw_map.get(macro_id, ""))
+        macro_label = macro_name_map.get(int(macro_id), "Unknown") if macro_id is not None else "Unknown"
         macro_color = color_for_macro(int(macro_id), macro_color_map) if macro_id is not None else "#7f7f7f"
 
         clusters.append(
@@ -691,12 +733,14 @@ def main() -> None:
                 "avg_publication_year": None if math.isnan(avg_year) else avg_year,
                 "avg_citation": None if math.isnan(avg_cit) else avg_cit,
                 "ranked_citation_score": None if math.isnan(rank_score) else rank_score,
+                "recency": None if math.isnan(recency) else recency,
+                "japan": 0 if math.isnan(japan) else int(japan),
                 "macro_cluster": macro_id if macro_id is not None else "Unknown",
                 "macro_cluster_label": macro_label,
                 "macro_color": macro_color,
                 "top_titles": papers_by_micro.get(mid, []),
-                "countries": countries_by_micro.get(mid, []),
-                "institutions": insts_by_micro.get(mid, []),
+                "countries": [x for x in countries_by_micro.get(mid, []) if not is_blank_like(x.get("country", ""))],
+                "institutions": [x for x in insts_by_micro.get(mid, []) if not is_blank_like(x.get("institution", ""))],
             }
         )
 
