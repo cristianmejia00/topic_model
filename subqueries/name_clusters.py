@@ -22,6 +22,7 @@ The API key is read from a local .key file (single line).
 """
 
 from __future__ import annotations
+import argparse
 import os
 import io
 import json
@@ -30,13 +31,22 @@ from pathlib import Path
 import concurrent.futures as cf
 import pandas as pd
 
+from common_config import (
+    DEFAULT_QUERY_FOLDER_TOPIC,
+    keywords_dir,
+    resolve_database,
+    resolve_query_folder,
+    subqueries_root,
+)
+
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-QUERY_FOLDER = "quantum_computing"
+DATABASE = "q20260629"
+QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
 
-SUBQUERIES_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
-KEYWORDS_DIR    = "s3://openalex-outputs/classification/q20260629/bertopic/"   # micro keywords
+SUBQUERIES_ROOT = subqueries_root(DATABASE)
+KEYWORDS_DIR    = keywords_dir(DATABASE)   # micro keywords
 ROOT_DIR        = Path(__file__).resolve().parent.parent
 KEY_FILE        = ROOT_DIR / ".key"
 
@@ -49,6 +59,23 @@ MAX_WORKERS = 8          # concurrency for the synchronous path
 MAX_CLUSTERS = None      # cap for a quick test run (None = all)
 
 OUT_BASE = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Name micro clusters for a selected subquery output folder."
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help="Classification database id, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--query-folder",
+        default=None,
+        help="Subquery folder name to read/write under subqueries/.",
+    )
+    return parser.parse_args()
 
 
 # ----------------------------------------------------------------------------
@@ -224,6 +251,18 @@ def run_batch(client, rows) -> dict:
 # main
 # ----------------------------------------------------------------------------
 def main():
+    global DATABASE, QUERY_FOLDER, SUBQUERIES_ROOT, KEYWORDS_DIR, OUT_BASE
+
+    args = parse_args()
+    DATABASE = resolve_database(args.database)
+    QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
+    SUBQUERIES_ROOT = subqueries_root(DATABASE)
+    KEYWORDS_DIR = keywords_dir(DATABASE)
+    OUT_BASE = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
+
+    print("[config] database:", DATABASE)
+    print("[config] query_folder:", QUERY_FOLDER)
+
     import awswrangler as wr
     rows = load_inputs()
     client = get_client()

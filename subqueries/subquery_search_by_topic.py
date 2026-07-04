@@ -25,14 +25,24 @@ Requires: sentence-transformers, numpy, pandas, awswrangler, pyarrow
 """
 
 from __future__ import annotations
+import argparse
 import sys
 import numpy as np
 import pandas as pd
 
+from common_config import (
+    DEFAULT_QUERY_FOLDER_TOPIC,
+    classification_root,
+    resolve_database,
+    resolve_query_folder,
+    subqueries_root,
+)
+
 # ----------------------------------------------------------------------------
 # QUERY PARAMETERS
 # ----------------------------------------------------------------------------
-QUERY_FOLDER = "quantum_computing"          # S3 subfolder name for this query
+DEFAULT_QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
+QUERY_FOLDER = DEFAULT_QUERY_FOLDER          # S3 subfolder name for this query
 QUERY_TEXT   = "quantum_computing: Quantum computing architectures, superconducting transmons and trapped ion qubits, fault-tolerant quantum error correction (QEC) surface codes, NISQ algorithms like VQE and QAOA, quantum superposition, entanglement, and software SDKs like Qiskit and Cirq."          # may be a full paragraph
 THRESHOLD    = 0.50                         # min cosine similarity to keep
 MIN_SIZE     = 30                           # min papers per micro cluster
@@ -44,13 +54,36 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"   # must match the pipelin
 
 DATABASE  = "q20260629"
 S3_STAGING = "s3://openalex-outputs/athena-staging/"
-MICRO_EMBEDDINGS = "s3://openalex-outputs/classification/q20260629/bertopic/micro_embeddings/"
-OUT_ROOT   = "s3://openalex-outputs/classification/q20260629/subqueries/"
+MICRO_EMBEDDINGS = f"{classification_root(DATABASE)}bertopic/micro_embeddings/"
+OUT_ROOT   = subqueries_root(DATABASE)
 
 TOP_PAPERS   = 10        # top cited papers per cluster
 TOP_ENTITIES = 20        # top countries / institutions per cluster
 
 OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create subquery outputs by topic similarity over micro centroids."
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help="Classification database id, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--query-folder",
+        default=None,
+        help="S3 subfolder name under subqueries/ for this run.",
+    )
+    parser.add_argument(
+        "--min-size",
+        type=int,
+        default=MIN_SIZE,
+        help="Minimum publications required per micro cluster after matching.",
+    )
+    return parser.parse_args()
 
 
 # ----------------------------------------------------------------------------
@@ -109,6 +142,20 @@ def write(df: pd.DataFrame, name: str):
 # main
 # ----------------------------------------------------------------------------
 def main():
+    global DATABASE, QUERY_FOLDER, OUT_ROOT, OUT_BASE, MICRO_EMBEDDINGS, MIN_SIZE
+
+    args = parse_args()
+    DATABASE = resolve_database(args.database)
+    QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER)
+    OUT_ROOT = subqueries_root(DATABASE)
+    OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
+    MICRO_EMBEDDINGS = f"{classification_root(DATABASE)}bertopic/micro_embeddings/"
+    MIN_SIZE = int(args.min_size)
+
+    print("[config] database:", DATABASE)
+    print("[config] query_folder:", QUERY_FOLDER)
+    print("[config] min_size:", MIN_SIZE)
+
     qvec = embed_query(QUERY_TEXT)
     ids, mat = load_micro_centroids()
     matches = score_and_filter(qvec, ids, mat)

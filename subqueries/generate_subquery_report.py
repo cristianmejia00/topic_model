@@ -18,6 +18,7 @@ Requirements addressed:
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import mimetypes
@@ -35,20 +36,46 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
   sys.path.insert(0, str(ROOT))
 
+from common_config import (
+    DEFAULT_QUERY_FOLDER_TOPIC,
+    keywords_dir,
+    macro_name_path,
+    resolve_database,
+    resolve_query_folder,
+    subqueries_root,
+)
 from macro_palette import color_for_macro, load_macro_color_map
 
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-QUERY_FOLDER = "quantum_computing"
+DATABASE = "q20260629"
+QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
 
-SUBQUERIES_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
-KEYWORDS_DIR = "s3://openalex-outputs/classification/q20260629/bertopic/"
-MACRO_NAME_PATH = "s3://openalex-outputs/classification/q20260629/cluster_name_macro/"
-LOCAL_DOCS_ROOT = Path("../docs")
+SUBQUERIES_ROOT = subqueries_root(DATABASE)
+KEYWORDS_DIR = keywords_dir(DATABASE)
+MACRO_NAME_PATH = macro_name_path(DATABASE)
+LOCAL_DOCS_ROOT = ROOT / "docs"
 
 TOP_TITLES = 10
+
+
+def parse_args() -> argparse.Namespace:
+  parser = argparse.ArgumentParser(
+    description="Generate a static HTML report for one subquery folder."
+  )
+  parser.add_argument(
+    "--database",
+    default=None,
+    help="Classification database id, e.g. q20260629.",
+  )
+  parser.add_argument(
+    "--query-folder",
+    default=None,
+    help="Subquery folder name to read/write under subqueries/.",
+  )
+  return parser.parse_args()
 
 
 def load_macro_colors() -> dict[int, str]:
@@ -594,206 +621,226 @@ def upload_report_folder(local_dir: Path, s3_prefix: str) -> list[str]:
 
 
 def main() -> None:
-    out_base = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
+  global DATABASE, QUERY_FOLDER, SUBQUERIES_ROOT, KEYWORDS_DIR, MACRO_NAME_PATH
 
-    print(f"[load] reading subquery datasets for '{QUERY_FOLDER}'")
-    micro_rep = read_subset(out_base, "cluster_report_micro", required=True)
-    papers = read_subset(out_base, "article_top10", required=True)
-    countries = read_subset(out_base, "top_countries", required=True)
-    insts = read_subset(out_base, "top_institutions", required=True)
-    names = read_subset(out_base, "cluster_names", required=False)
-    kw_micro = read_subset(KEYWORDS_DIR, "micro", required=False)
-    macro_color_map = load_macro_colors()
-    macro_name_map = load_macro_names()
+  args = parse_args()
+  DATABASE = resolve_database(args.database)
+  QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
+  SUBQUERIES_ROOT = subqueries_root(DATABASE)
+  KEYWORDS_DIR = keywords_dir(DATABASE)
+  MACRO_NAME_PATH = macro_name_path(DATABASE)
 
-    micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
-    pub_col = pick_col(micro_rep, ["publications"], required=True)
-    avg_cit_col = pick_col(micro_rep, ["ave_citations", "avg_citations", "average_citations"], required=False)
-    rank_col = pick_col(
-        micro_rep,
-        ["yearly_rank_citations", "ranked_citation", "ranked_citation_score"],
-        required=False,
+  print("[config] database:", DATABASE)
+  print("[config] query_folder:", QUERY_FOLDER)
+
+  out_base = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
+
+  print(f"[load] reading subquery datasets for '{QUERY_FOLDER}'")
+  micro_rep = read_subset(out_base, "cluster_report_micro", required=True)
+  papers = read_subset(out_base, "article_top10", required=True)
+  countries = read_subset(out_base, "top_countries", required=True)
+  insts = read_subset(out_base, "top_institutions", required=True)
+  names = read_subset(out_base, "cluster_names", required=False)
+  kw_micro = read_subset(KEYWORDS_DIR, "micro", required=False)
+  macro_color_map = load_macro_colors()
+  macro_name_map = load_macro_names()
+
+  micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
+  pub_col = pick_col(micro_rep, ["publications"], required=True)
+  avg_cit_col = pick_col(micro_rep, ["ave_citations", "avg_citations", "average_citations"], required=False)
+  rank_col = pick_col(
+    micro_rep,
+    ["yearly_rank_citations", "ranked_citation", "ranked_citation_score"],
+    required=False,
+  )
+  recency_col = pick_col(micro_rep, ["recency_py", "recency"], required=False)
+  japan_col = pick_col(micro_rep, ["japan_count", "japan"], required=False)
+  macro_col = pick_col(micro_rep, ["macro_cluster"], required=False)
+
+  micro_rep = micro_rep.copy()
+  micro_rep[micro_id_col] = micro_rep[micro_id_col].astype("int64")
+  micro_rep[pub_col] = pd.to_numeric(micro_rep[pub_col], errors="coerce")
+  if avg_cit_col:
+    micro_rep[avg_cit_col] = pd.to_numeric(micro_rep[avg_cit_col], errors="coerce")
+  if rank_col:
+    micro_rep[rank_col] = pd.to_numeric(micro_rep[rank_col], errors="coerce")
+  if recency_col:
+    micro_rep[recency_col] = pd.to_numeric(micro_rep[recency_col], errors="coerce")
+  if japan_col:
+    micro_rep[japan_col] = pd.to_numeric(micro_rep[japan_col], errors="coerce")
+
+  papers = papers.copy()
+  papers["micro_cluster"] = papers["micro_cluster"].astype("int64")
+  papers["publication_year"] = pd.to_numeric(papers["publication_year"], errors="coerce")
+  papers["citations"] = pd.to_numeric(papers["citations"], errors="coerce")
+
+  countries = countries.copy()
+  countries["micro_cluster"] = countries["micro_cluster"].astype("int64")
+  countries["freq"] = pd.to_numeric(countries["freq"], errors="coerce")
+  if "avg_publication_year" in countries.columns:
+    countries["avg_publication_year"] = pd.to_numeric(countries["avg_publication_year"], errors="coerce")
+  if "avg_citation" in countries.columns:
+    countries["avg_citation"] = pd.to_numeric(countries["avg_citation"], errors="coerce")
+  countries["country"] = countries["country"].map(iso2_to_country_name)
+
+  insts = insts.copy()
+  insts["micro_cluster"] = insts["micro_cluster"].astype("int64")
+  insts["freq"] = pd.to_numeric(insts["freq"], errors="coerce")
+  if "avg_publication_year" in insts.columns:
+    insts["avg_publication_year"] = pd.to_numeric(insts["avg_publication_year"], errors="coerce")
+  if "avg_citation" in insts.columns:
+    insts["avg_citation"] = pd.to_numeric(insts["avg_citation"], errors="coerce")
+
+  avg_year_by_micro = (
+    papers.dropna(subset=["publication_year"])
+    .groupby("micro_cluster", as_index=False)["publication_year"]
+    .mean()
+    .rename(columns={"publication_year": "avg_publication_year"})
+  )
+
+  names_map: dict[int, dict[str, str]] = {}
+  if not names.empty and "micro_cluster" in names.columns:
+    n = names.copy()
+    n["micro_cluster"] = n["micro_cluster"].astype("int64")
+    for row in n.itertuples(index=False):
+      names_map[int(row.micro_cluster)] = {
+        "short_name": sanitize_text(getattr(row, "short_name", "")),
+        "name": sanitize_text(getattr(row, "name", "")),
+        "description": sanitize_text(getattr(row, "description", "")),
+      }
+
+  kw_map: dict[int, str] = {}
+  if not kw_micro.empty and {"cluster", "keywords"}.issubset(kw_micro.columns):
+    k = kw_micro.copy()
+    k["cluster"] = k["cluster"].astype("int64")
+    kw_map = dict(zip(k["cluster"], k["keywords"].fillna("")))
+
+  merged = micro_rep.merge(avg_year_by_micro, left_on=micro_id_col, right_on="micro_cluster", how="left")
+  if "micro_cluster_y" in merged.columns:
+    merged = merged.drop(columns=["micro_cluster_y"])
+  if "micro_cluster_x" in merged.columns:
+    merged = merged.rename(columns={"micro_cluster_x": "micro_cluster"})
+  elif micro_id_col != "micro_cluster":
+    merged = merged.rename(columns={micro_id_col: "micro_cluster"})
+
+  sort_rank_col = rank_col if rank_col else pub_col
+  merged = merged.sort_values([pub_col, sort_rank_col, "micro_cluster"], ascending=[False, False, True]).reset_index(drop=True)
+  merged["display_id"] = range(1, len(merged) + 1)
+
+  papers_by_micro: dict[int, list[dict[str, Any]]] = {}
+  p_sorted = papers.sort_values(["micro_cluster", "citations"], ascending=[True, False])
+  for mid, grp in p_sorted.groupby("micro_cluster"):
+    top = grp.head(TOP_TITLES)
+    papers_by_micro[int(mid)] = [
+      {
+        "title": sanitize_text(r.title),
+        "citations": int(r.citations) if pd.notna(r.citations) else 0,
+        "publication_year": int(r.publication_year) if pd.notna(r.publication_year) else None,
+      }
+      for r in top.itertuples(index=False)
+    ]
+
+  countries_by_micro: dict[int, list[dict[str, Any]]] = {}
+  c_sorted = countries.sort_values(["micro_cluster", "freq", "country"], ascending=[True, False, True])
+  for mid, grp in c_sorted.groupby("micro_cluster"):
+    countries_by_micro[int(mid)] = [
+      {
+        "country": sanitize_text(r.country),
+        "freq": int(r.freq) if pd.notna(r.freq) else 0,
+        "avg_publication_year": float(getattr(r, "avg_publication_year", float("nan")))
+        if pd.notna(getattr(r, "avg_publication_year", float("nan")))
+        else None,
+        "avg_citation": float(getattr(r, "avg_citation", float("nan")))
+        if pd.notna(getattr(r, "avg_citation", float("nan")))
+        else None,
+      }
+      for r in grp.itertuples(index=False)
+      if not is_blank_like(getattr(r, "country", ""))
+    ]
+
+  insts_by_micro: dict[int, list[dict[str, Any]]] = {}
+  i_sorted = insts.sort_values(["micro_cluster", "freq", "institution"], ascending=[True, False, True])
+  for mid, grp in i_sorted.groupby("micro_cluster"):
+    insts_by_micro[int(mid)] = [
+      {
+        "institution": sanitize_text(r.institution),
+        "freq": int(r.freq) if pd.notna(r.freq) else 0,
+        "avg_publication_year": float(getattr(r, "avg_publication_year", float("nan")))
+        if pd.notna(getattr(r, "avg_publication_year", float("nan")))
+        else None,
+        "avg_citation": float(getattr(r, "avg_citation", float("nan")))
+        if pd.notna(getattr(r, "avg_citation", float("nan")))
+        else None,
+      }
+      for r in grp.itertuples(index=False)
+    ]
+
+  clusters: list[dict[str, Any]] = []
+  for r in merged.itertuples(index=False):
+    mid = int(r.micro_cluster)
+    kwargs = names_map.get(mid, {})
+    short_name = kwargs.get("short_name") or keyword_fallback(kw_map.get(mid, ""))
+    long_name = kwargs.get("name") or short_name
+    desc = kwargs.get("description") or ""
+
+    if short_name == "Unnamed Cluster":
+      short_name = f"Cluster {mid}"
+      long_name = f"Cluster {mid}"
+
+    avg_cit = float(getattr(r, avg_cit_col)) if avg_cit_col and pd.notna(getattr(r, avg_cit_col)) else float("nan")
+    rank_score = float(getattr(r, rank_col)) if rank_col and pd.notna(getattr(r, rank_col)) else float("nan")
+    avg_year = float(r.avg_publication_year) if pd.notna(r.avg_publication_year) else float("nan")
+    recency = float(getattr(r, recency_col)) if recency_col and pd.notna(getattr(r, recency_col)) else float("nan")
+    japan = float(getattr(r, japan_col)) if japan_col and pd.notna(getattr(r, japan_col)) else float("nan")
+
+    macro_id = int(getattr(r, macro_col)) if macro_col and pd.notna(getattr(r, macro_col)) else None
+    macro_label = macro_name_map.get(int(macro_id), "Unknown") if macro_id is not None else "Unknown"
+    macro_color = color_for_macro(int(macro_id), macro_color_map) if macro_id is not None else "#7f7f7f"
+
+    clusters.append(
+      {
+        "display_id": int(r.display_id),
+        "global_id": mid,
+        "short_name": short_name,
+        "name": long_name,
+        "description": desc,
+        "publications": int(getattr(r, pub_col)) if pd.notna(getattr(r, pub_col)) else 0,
+        "avg_publication_year": None if math.isnan(avg_year) else avg_year,
+        "avg_citation": None if math.isnan(avg_cit) else avg_cit,
+        "ranked_citation_score": None if math.isnan(rank_score) else rank_score,
+        "recency": None if math.isnan(recency) else recency,
+        "japan": 0 if math.isnan(japan) else int(japan),
+        "macro_cluster": macro_id if macro_id is not None else "Unknown",
+        "macro_cluster_label": macro_label,
+        "macro_color": macro_color,
+        "top_titles": papers_by_micro.get(mid, []),
+        "countries": [x for x in countries_by_micro.get(mid, []) if not is_blank_like(x.get("country", ""))],
+        "institutions": [x for x in insts_by_micro.get(mid, []) if not is_blank_like(x.get("institution", ""))],
+      }
     )
-    recency_col = pick_col(micro_rep, ["recency_py", "recency"], required=False)
-    japan_col = pick_col(micro_rep, ["japan_count", "japan"], required=False)
-    macro_col = pick_col(micro_rep, ["macro_cluster"], required=False)
 
-    micro_rep = micro_rep.copy()
-    micro_rep[micro_id_col] = micro_rep[micro_id_col].astype("int64")
-    micro_rep[pub_col] = pd.to_numeric(micro_rep[pub_col], errors="coerce")
-    if avg_cit_col:
-      micro_rep[avg_cit_col] = pd.to_numeric(micro_rep[avg_cit_col], errors="coerce")
-    if rank_col:
-      micro_rep[rank_col] = pd.to_numeric(micro_rep[rank_col], errors="coerce")
-    if recency_col:
-      micro_rep[recency_col] = pd.to_numeric(micro_rep[recency_col], errors="coerce")
-    if japan_col:
-      micro_rep[japan_col] = pd.to_numeric(micro_rep[japan_col], errors="coerce")
+  plot_by_macro = build_plot_data(clusters)
 
-    papers = papers.copy()
-    papers["micro_cluster"] = papers["micro_cluster"].astype("int64")
-    papers["publication_year"] = pd.to_numeric(papers["publication_year"], errors="coerce")
-    papers["citations"] = pd.to_numeric(papers["citations"], errors="coerce")
+  report_payload = {
+    "query_folder": QUERY_FOLDER,
+    "clusters": clusters,
+    "plot_by_macro": plot_by_macro,
+    "scatter_scale": 1.1,
+  }
 
-    countries = countries.copy()
-    countries["micro_cluster"] = countries["micro_cluster"].astype("int64")
-    countries["freq"] = pd.to_numeric(countries["freq"], errors="coerce")
-    if "avg_publication_year" in countries.columns:
-      countries["avg_publication_year"] = pd.to_numeric(countries["avg_publication_year"], errors="coerce")
-    if "avg_citation" in countries.columns:
-      countries["avg_citation"] = pd.to_numeric(countries["avg_citation"], errors="coerce")
-    countries["country"] = countries["country"].map(iso2_to_country_name)
+  out_dir = LOCAL_DOCS_ROOT / QUERY_FOLDER / "report"
+  out_dir.mkdir(parents=True, exist_ok=True)
+  html_path = out_dir / "index.html"
+  html_path.write_text(build_html(json.dumps(report_payload, ensure_ascii=True)), encoding="utf-8")
 
-    insts = insts.copy()
-    insts["micro_cluster"] = insts["micro_cluster"].astype("int64")
-    insts["freq"] = pd.to_numeric(insts["freq"], errors="coerce")
-    if "avg_publication_year" in insts.columns:
-      insts["avg_publication_year"] = pd.to_numeric(insts["avg_publication_year"], errors="coerce")
-    if "avg_citation" in insts.columns:
-      insts["avg_citation"] = pd.to_numeric(insts["avg_citation"], errors="coerce")
+  s3_report_prefix = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/report/"
+  uploaded = upload_report_folder(out_dir, s3_report_prefix)
 
-    avg_year_by_micro = (
-        papers.dropna(subset=["publication_year"])
-        .groupby("micro_cluster", as_index=False)["publication_year"]
-        .mean()
-        .rename(columns={"publication_year": "avg_publication_year"})
-    )
-
-    names_map: dict[int, dict[str, str]] = {}
-    if not names.empty and "micro_cluster" in names.columns:
-        n = names.copy()
-        n["micro_cluster"] = n["micro_cluster"].astype("int64")
-        for row in n.itertuples(index=False):
-            names_map[int(row.micro_cluster)] = {
-                "short_name": sanitize_text(getattr(row, "short_name", "")),
-                "name": sanitize_text(getattr(row, "name", "")),
-                "description": sanitize_text(getattr(row, "description", "")),
-            }
-
-    kw_map: dict[int, str] = {}
-    if not kw_micro.empty and {"cluster", "keywords"}.issubset(kw_micro.columns):
-      k = kw_micro.copy()
-      k["cluster"] = k["cluster"].astype("int64")
-      kw_map = dict(zip(k["cluster"], k["keywords"].fillna("")))
-
-    merged = micro_rep.merge(avg_year_by_micro, left_on=micro_id_col, right_on="micro_cluster", how="left")
-    if "micro_cluster_y" in merged.columns:
-        merged = merged.drop(columns=["micro_cluster_y"])
-    if "micro_cluster_x" in merged.columns:
-        merged = merged.rename(columns={"micro_cluster_x": "micro_cluster"})
-    elif micro_id_col != "micro_cluster":
-        merged = merged.rename(columns={micro_id_col: "micro_cluster"})
-
-    sort_rank_col = rank_col if rank_col else pub_col
-    merged = merged.sort_values([pub_col, sort_rank_col, "micro_cluster"], ascending=[False, False, True]).reset_index(drop=True)
-    merged["display_id"] = range(1, len(merged) + 1)
-
-    papers_by_micro: dict[int, list[dict[str, Any]]] = {}
-    p_sorted = papers.sort_values(["micro_cluster", "citations"], ascending=[True, False])
-    for mid, grp in p_sorted.groupby("micro_cluster"):
-        top = grp.head(TOP_TITLES)
-        papers_by_micro[int(mid)] = [
-            {
-                "title": sanitize_text(r.title),
-                "citations": int(r.citations) if pd.notna(r.citations) else 0,
-                "publication_year": int(r.publication_year) if pd.notna(r.publication_year) else None,
-            }
-            for r in top.itertuples(index=False)
-        ]
-
-    countries_by_micro: dict[int, list[dict[str, Any]]] = {}
-    c_sorted = countries.sort_values(["micro_cluster", "freq", "country"], ascending=[True, False, True])
-    for mid, grp in c_sorted.groupby("micro_cluster"):
-        countries_by_micro[int(mid)] = [
-        {
-          "country": sanitize_text(r.country),
-          "freq": int(r.freq) if pd.notna(r.freq) else 0,
-          "avg_publication_year": float(getattr(r, "avg_publication_year", float("nan"))) if pd.notna(getattr(r, "avg_publication_year", float("nan"))) else None,
-          "avg_citation": float(getattr(r, "avg_citation", float("nan"))) if pd.notna(getattr(r, "avg_citation", float("nan"))) else None,
-        }
-            for r in grp.itertuples(index=False)
-        if not is_blank_like(getattr(r, "country", ""))
-        ]
-
-    insts_by_micro: dict[int, list[dict[str, Any]]] = {}
-    i_sorted = insts.sort_values(["micro_cluster", "freq", "institution"], ascending=[True, False, True])
-    for mid, grp in i_sorted.groupby("micro_cluster"):
-        insts_by_micro[int(mid)] = [
-            {
-              "institution": sanitize_text(r.institution),
-              "freq": int(r.freq) if pd.notna(r.freq) else 0,
-              "avg_publication_year": float(getattr(r, "avg_publication_year", float("nan"))) if pd.notna(getattr(r, "avg_publication_year", float("nan"))) else None,
-              "avg_citation": float(getattr(r, "avg_citation", float("nan"))) if pd.notna(getattr(r, "avg_citation", float("nan"))) else None,
-            }
-            for r in grp.itertuples(index=False)
-        ]
-
-    clusters: list[dict[str, Any]] = []
-    for r in merged.itertuples(index=False):
-        mid = int(r.micro_cluster)
-        kwargs = names_map.get(mid, {})
-        short_name = kwargs.get("short_name") or keyword_fallback(kw_map.get(mid, ""))
-        long_name = kwargs.get("name") or short_name
-        desc = kwargs.get("description") or ""
-
-        if short_name == "Unnamed Cluster":
-            short_name = f"Cluster {mid}"
-            long_name = f"Cluster {mid}"
-
-        avg_cit = float(getattr(r, avg_cit_col)) if avg_cit_col and pd.notna(getattr(r, avg_cit_col)) else float("nan")
-        rank_score = float(getattr(r, rank_col)) if rank_col and pd.notna(getattr(r, rank_col)) else float("nan")
-        avg_year = float(r.avg_publication_year) if pd.notna(r.avg_publication_year) else float("nan")
-        recency = float(getattr(r, recency_col)) if recency_col and pd.notna(getattr(r, recency_col)) else float("nan")
-        japan = float(getattr(r, japan_col)) if japan_col and pd.notna(getattr(r, japan_col)) else float("nan")
-
-        macro_id = int(getattr(r, macro_col)) if macro_col and pd.notna(getattr(r, macro_col)) else None
-        macro_label = macro_name_map.get(int(macro_id), "Unknown") if macro_id is not None else "Unknown"
-        macro_color = color_for_macro(int(macro_id), macro_color_map) if macro_id is not None else "#7f7f7f"
-
-        clusters.append(
-            {
-                "display_id": int(r.display_id),
-                "global_id": mid,
-                "short_name": short_name,
-                "name": long_name,
-                "description": desc,
-                "publications": int(getattr(r, pub_col)) if pd.notna(getattr(r, pub_col)) else 0,
-                "avg_publication_year": None if math.isnan(avg_year) else avg_year,
-                "avg_citation": None if math.isnan(avg_cit) else avg_cit,
-                "ranked_citation_score": None if math.isnan(rank_score) else rank_score,
-                "recency": None if math.isnan(recency) else recency,
-                "japan": 0 if math.isnan(japan) else int(japan),
-                "macro_cluster": macro_id if macro_id is not None else "Unknown",
-                "macro_cluster_label": macro_label,
-                "macro_color": macro_color,
-                "top_titles": papers_by_micro.get(mid, []),
-                "countries": [x for x in countries_by_micro.get(mid, []) if not is_blank_like(x.get("country", ""))],
-                "institutions": [x for x in insts_by_micro.get(mid, []) if not is_blank_like(x.get("institution", ""))],
-            }
-        )
-
-    plot_by_macro = build_plot_data(clusters)
-
-    report_payload = {
-        "query_folder": QUERY_FOLDER,
-        "clusters": clusters,
-        "plot_by_macro": plot_by_macro,
-        "scatter_scale": 1.1,
-    }
-
-    out_dir = LOCAL_DOCS_ROOT / QUERY_FOLDER / "report"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    html_path = out_dir / "index.html"
-    html_path.write_text(build_html(json.dumps(report_payload, ensure_ascii=True)), encoding="utf-8")
-
-    s3_report_prefix = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/report/"
-    uploaded = upload_report_folder(out_dir, s3_report_prefix)
-
-    print(f"[done] clusters: {len(clusters):,}")
-    print(f"[done] local report: {html_path}")
-    print(f"[done] uploaded: {len(uploaded)} files to {s3_report_prefix}")
-    for p in uploaded:
-        print(f"  - {p}")
+  print(f"[done] clusters: {len(clusters):,}")
+  print(f"[done] local report: {html_path}")
+  print(f"[done] uploaded: {len(uploaded)} files to {s3_report_prefix}")
+  for p in uploaded:
+    print(f"  - {p}")
 
 
 if __name__ == "__main__":

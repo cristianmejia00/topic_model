@@ -36,10 +36,17 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from common_config import (
+    DEFAULT_QUERY_FOLDER_FILTERS,
+    resolve_database,
+    resolve_query_folder,
+    subqueries_root,
+)
+
 # ----------------------------------------------------------------------------
 # DEFAULT PARAMETERS
 # ----------------------------------------------------------------------------
-DEFAULT_QUERY_FOLDER = "filters_ave_py_ge_2022_and_recency_py_ge_0_4"
+DEFAULT_QUERY_FOLDER = DEFAULT_QUERY_FOLDER_FILTERS
 DEFAULT_FILTERS = ["ave_py>=2022", "recency_py>=0.4"]
 MIN_SIZE_DEFAULT = 30
 
@@ -48,7 +55,7 @@ MIN_SIZE_DEFAULT = 30
 # ----------------------------------------------------------------------------
 DATABASE = "q20260629"
 S3_STAGING = "s3://openalex-outputs/athena-staging/"
-OUT_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
+OUT_ROOT = subqueries_root(DATABASE)
 
 TOP_PAPERS = 10
 TOP_ENTITIES = 20
@@ -80,8 +87,13 @@ def parse_args() -> argparse.Namespace:
         description="Create subquery outputs by filtering micro cluster numeric metrics."
     )
     parser.add_argument(
+        "--database",
+        default=None,
+        help="Classification database id, e.g. q20260629.",
+    )
+    parser.add_argument(
         "--query-folder",
-        default=DEFAULT_QUERY_FOLDER,
+        default=None,
         help="S3 subfolder name under subqueries/ for this run.",
     )
     parser.add_argument(
@@ -165,9 +177,14 @@ def apply_filters(micro_rep: pd.DataFrame, rules: list[FilterRule]) -> pd.DataFr
 
 
 def main():
+    global DATABASE, OUT_ROOT
+
     args = parse_args()
+    DATABASE = resolve_database(args.database)
+    query_folder = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER)
+    OUT_ROOT = subqueries_root(DATABASE)
     filter_exprs = args.filters if args.filters else DEFAULT_FILTERS
-    out_base = f"{OUT_ROOT}{args.query_folder}/"
+    out_base = f"{OUT_ROOT}{query_folder}/"
 
     try:
         rules = [parse_filter_rule(expr) for expr in filter_exprs]
@@ -175,7 +192,8 @@ def main():
         print(f"[error] {exc}")
         sys.exit(2)
 
-    print("[config] query_folder:", args.query_folder)
+    print("[config] database:", DATABASE)
+    print("[config] query_folder:", query_folder)
     print("[config] filters (AND):")
     for expr in filter_exprs:
         print("   -", expr)

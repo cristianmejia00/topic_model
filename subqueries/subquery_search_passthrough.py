@@ -18,21 +18,46 @@ Requires: pandas, awswrangler, pyarrow
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 import pandas as pd
+
+from common_config import (
+    DEFAULT_QUERY_FOLDER_PASSTHROUGH,
+    resolve_database,
+    resolve_query_folder,
+    subqueries_root,
+)
 
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
 DATABASE = "q20260629"
 S3_STAGING = "s3://openalex-outputs/athena-staging/"
-OUT_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
-QUERY_FOLDER = "everything"
+OUT_ROOT = subqueries_root(DATABASE)
+QUERY_FOLDER = DEFAULT_QUERY_FOLDER_PASSTHROUGH
 OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
 
 TOP_PAPERS = 10
 TOP_ENTITIES = 20
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create subquery outputs for all micro clusters (no filters)."
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help="Classification database id, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--query-folder",
+        default=None,
+        help="S3 subfolder name under subqueries/ for this run.",
+    )
+    return parser.parse_args()
 
 
 def _in_clause(ids) -> str:
@@ -58,6 +83,17 @@ def write(df: pd.DataFrame, name: str):
 
 
 def main():
+    global DATABASE, QUERY_FOLDER, OUT_ROOT, OUT_BASE
+
+    args = parse_args()
+    DATABASE = resolve_database(args.database)
+    QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_PASSTHROUGH)
+    OUT_ROOT = subqueries_root(DATABASE)
+    OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
+
+    print("[config] database:", DATABASE)
+    print("[config] query_folder:", QUERY_FOLDER)
+
     print("[load] cluster_report_micro ...")
     micro_rep = run_sql("SELECT * FROM cluster_report_micro")
 

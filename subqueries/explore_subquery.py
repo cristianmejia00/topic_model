@@ -23,8 +23,17 @@ Requires: numpy, pandas, awswrangler, pyarrow
 """
 
 from __future__ import annotations
+import argparse
 import sys
 import pandas as pd
+
+from common_config import (
+    DEFAULT_QUERY_FOLDER_TOPIC,
+    keywords_dir,
+    resolve_database,
+    resolve_query_folder,
+    subqueries_root,
+)
 
 pd.set_option("display.max_colwidth", 80)
 pd.set_option("display.width", 160)
@@ -32,10 +41,11 @@ pd.set_option("display.width", 160)
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-QUERY_FOLDER = "quantum_computing"
+DATABASE = "q20260629"
+QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
 
-SUBQUERIES_ROOT = "s3://openalex-outputs/classification/q20260629/subqueries/"
-KEYWORDS_DIR    = "s3://openalex-outputs/classification/q20260629/bertopic/"   # for keywords
+SUBQUERIES_ROOT = subqueries_root(DATABASE)
+KEYWORDS_DIR = keywords_dir(DATABASE)   # for keywords
 
 KW_TERMS = 6        # keyword terms shown in the summary table
 
@@ -45,9 +55,11 @@ def _short(kw, n=KW_TERMS):
 
 
 class Explorer:
-    def __init__(self, query_folder=QUERY_FOLDER, autoload=True):
+    def __init__(self, query_folder=QUERY_FOLDER, database=DATABASE, autoload=True):
+        self.database = database
         self.folder = query_folder
-        self.base = f"{SUBQUERIES_ROOT}{query_folder}/"
+        self.base = f"{subqueries_root(database)}{query_folder}/"
+        self.keywords_dir = keywords_dir(database)
         if autoload:
             self._load()
 
@@ -75,7 +87,7 @@ class Explorer:
         for lvl in ("micro", "meso", "macro"):
             try:
                 import awswrangler as wr
-                k = wr.s3.read_parquet(f"{KEYWORDS_DIR}{lvl}/")[["cluster", "keywords"]]
+                k = wr.s3.read_parquet(f"{self.keywords_dir}{lvl}/")[["cluster", "keywords"]]
                 self.kw[lvl] = dict(zip(k["cluster"].astype("int64"),
                                         k["keywords"].fillna("")))
             except Exception:
@@ -188,7 +200,17 @@ class Explorer:
 
 
 def main():
-    e = Explorer(QUERY_FOLDER)
+    parser = argparse.ArgumentParser(description="Explore a generated subquery output in terminal mode.")
+    parser.add_argument("--database", default=None, help="Classification database id, e.g. q20260629.")
+    parser.add_argument("--query-folder", default=None, help="Subquery folder name under subqueries/.")
+    args = parser.parse_args()
+
+    database = resolve_database(args.database)
+    query_folder = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
+    print("[config] database:", database)
+    print("[config] query_folder:", query_folder)
+
+    e = Explorer(query_folder=query_folder, database=database)
     e.summary()
     print("\nEnter a micro id to drill in — or 'meso N' / 'macro N' / 'q' to quit.")
     while True:
