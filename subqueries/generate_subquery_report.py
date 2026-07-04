@@ -59,6 +59,7 @@ MACRO_NAME_PATH = macro_name_path(DATABASE)
 LOCAL_DOCS_ROOT = ROOT / "docs"
 
 TOP_TITLES = 10
+USE_MACRO_CLUSTER = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,13 +148,13 @@ def keyword_fallback(kw: str, max_terms: int = 5) -> str:
     return " ".join(parts[:max_terms]).title()
 
 
-def build_plot_data(summary_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def build_plot_data(summary_rows: list[dict[str, Any]], use_macro_cluster: bool = True) -> dict[str, Any]:
   by_macro: dict[str, dict[str, list[Any]]] = {}
   for r in summary_rows:
-    macro = str(r.get("macro_cluster_label", "Unknown"))
+    macro = str(r.get("macro_cluster_label", "Unknown")) if use_macro_cluster else "All Clusters"
     if macro not in by_macro:
       by_macro[macro] = {
-        "color": r.get("macro_color", "#7f7f7f"),
+        "color": r.get("macro_color", "#7f7f7f") if use_macro_cluster else "#005f73",
         "x": [],
         "y": [],
         "size": [],
@@ -489,7 +490,7 @@ def build_html(report_json: str) -> str:
         { key: "global_id", label: "Global ID", type: "number" },
         { key: "short_name", label: "Short Name", type: "string" },
         { key: "name", label: "Name", type: "string" },
-        { key: "macro_cluster_label", label: "Macro Cluster", type: "string" },
+        ...(REPORT.use_macro_cluster ? [{ key: "macro_cluster_label", label: "Macro Cluster", type: "string" }] : []),
         { key: "publications", label: "Publications", type: "number" },
         { key: "avg_publication_year", label: "Avg Publication Year", type: "number" },
         { key: "avg_citation", label: "Avg Citation", type: "number" },
@@ -612,6 +613,7 @@ def build_html(report_json: str) -> str:
         xaxis: {{title: "Average Publication Year"}},
         yaxis: {{title: "Ranked Citation"}},
         legend: {{orientation: "h"}},
+        showlegend: Boolean(REPORT.use_macro_cluster),
         margin: {{l: 50, r: 20, t: 20, b: 60}},
       }};
 
@@ -686,6 +688,7 @@ def main() -> None:
 
   print("[config] database:", DATABASE)
   print("[config] query_folder:", QUERY_FOLDER)
+  print("[config] use_macro_cluster:", USE_MACRO_CLUSTER)
 
   out_base = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
 
@@ -696,8 +699,8 @@ def main() -> None:
   insts = read_subset(out_base, "top_institutions", required=True)
   names = read_subset(out_base, "cluster_names", required=False)
   kw_micro = read_subset(KEYWORDS_DIR, "micro", required=False)
-  macro_color_map = load_macro_colors()
-  macro_name_map = load_macro_names()
+  macro_color_map = load_macro_colors() if USE_MACRO_CLUSTER else {}
+  macro_name_map = load_macro_names() if USE_MACRO_CLUSTER else {}
 
   micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
   pub_col = pick_col(micro_rep, ["publications"], required=True)
@@ -869,12 +872,13 @@ def main() -> None:
       }
     )
 
-  plot_by_macro = build_plot_data(clusters)
+  plot_by_macro = build_plot_data(clusters, use_macro_cluster=USE_MACRO_CLUSTER)
 
   report_payload = {
     "query_folder": QUERY_FOLDER,
     "clusters": clusters,
     "plot_by_macro": plot_by_macro,
+    "use_macro_cluster": USE_MACRO_CLUSTER,
     "scatter_scale": 1.1,
   }
 
