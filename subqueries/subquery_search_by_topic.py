@@ -43,7 +43,7 @@ from common_config import (
 # ----------------------------------------------------------------------------
 DEFAULT_QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
 QUERY_FOLDER = DEFAULT_QUERY_FOLDER          # S3 subfolder name for this query
-QUERY_TEXT   = "Transcendent culture and language frameworks, cross-lingual semantic search, multilingual cognitive diversity, trilingualism and linguistic pluralism, computational sociolinguistics tracking cultural evolution, digital humanities text mining, humanities-STEM convergence, mitigating Anglocentric cultural bias in LLMs, cross-cultural knowledge graphs, natural language semantics preserving contextual nuance."
+QUERY_TEXT   = "Diversity equity and inclusion (DEI) innovation frameworks, research co-production with marginalized communities, contemporary intersectionality addressing overlapping discrimination axes, diversity-driven team science generating academic excellence, inclusive dialogue strategies, mitigating implicit unconscious bias in academic evaluation paradigms, gender equity initiatives in STEM leadership, algorithmic fairness and digital accessibility, inclusive university models transforming peer-review criteria. Disability equity frameworks based on the social model, assistive technology AT engineering, accessible information systems and digital campus inclusion, neurodiversity support algorithms, DO-IT Japan transition models, barrier-free educational infrastructure and universal design in higher education."
 THRESHOLD    = 0.50                         # min cosine similarity to 
 MIN_SIZE     = 30                           # min papers per micro cluster
 
