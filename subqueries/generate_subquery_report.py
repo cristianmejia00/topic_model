@@ -301,10 +301,44 @@ def build_html(report_json: str) -> str:
       margin-bottom: 12px;
       box-shadow: 0 4px 16px rgba(0,0,0,0.05);
     }}
+    .summary-meta {{
+      margin: 4px 0 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .summary-scroll {{
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+    }}
+    .summary-scroll thead th {{
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #eaf1f4;
+    }}
+    .name-details {{ margin: 0; }}
+    .name-details > summary {{
+      cursor: pointer;
+      color: var(--brand);
+      font-weight: 700;
+      list-style: disclosure-closed;
+    }}
+    .name-details[open] > summary {{ list-style: disclosure-open; }}
+    .name-desc {{
+      margin-top: 6px;
+      color: #324150;
+      line-height: 1.4;
+      max-width: 52ch;
+      white-space: normal;
+    }}
     #scatter {{ width: 100%; height: 680px; }}
     @media (max-width: 960px) {{
       .layout {{ grid-template-columns: 1fr; min-height: auto; }}
       .cluster-list {{ max-height: 280px; }}
+      .summary-scroll {{ max-height: 300px; }}
       #scatter {{ height: 520px; }}
     }}
   </style>
@@ -329,7 +363,10 @@ def build_html(report_json: str) -> str:
     <section id=\"tab2\" class=\"tab\">
       <div class=\"tab2-section\">
         <h3>Full Micro Cluster Table</h3>
-        <div id=\"summary-table\"></div>
+        <div id=\"summary-meta\" class=\"summary-meta\"></div>
+        <div class=\"summary-scroll\">
+          <div id=\"summary-table\"></div>
+        </div>
       </div>
       <div class=\"tab2-section\">
         <h3>Average Publication Year vs Ranked Citation</h3>
@@ -349,6 +386,15 @@ def build_html(report_json: str) -> str:
     function fmtInt(v) {{
       if (v === null || v === undefined || Number.isNaN(Number(v))) return "-";
       return Number(v).toLocaleString();
+    }}
+
+    function escapeHtml(value) {{
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     }}
 
     function tableHtml(headers, rows, headerAttrs = null) {{
@@ -454,6 +500,7 @@ def build_html(report_json: str) -> str:
 
       const state = { key: "display_id", dir: "asc" };
       const root = document.getElementById("summary-table");
+      const meta = document.getElementById("summary-meta");
 
       function normalize(v, type) {
         if (v === null || v === undefined) return type === "number" ? Number.NEGATIVE_INFINITY : "";
@@ -472,7 +519,13 @@ def build_html(report_json: str) -> str:
         if (col.key === "ranked_citation_score") return fmtNumber(v, 3);
         if (col.key === "recency") return fmtNumber(v, 3);
         if (col.key === "japan") return fmtInt(v);
-        return v ?? "";
+        if (col.key === "name") {
+          const title = escapeHtml(v ?? "");
+          const desc = escapeHtml(c.description ?? "");
+          if (!desc) return title;
+          return `<details class="name-details"><summary>${{title}}</summary><div class="name-desc">${{desc}}</div></details>`;
+        }
+        return escapeHtml(v ?? "");
       }
 
       function sortedData() {
@@ -488,6 +541,7 @@ def build_html(report_json: str) -> str:
       }
 
       function render() {
+        meta.textContent = `Rows: ${{fmtInt(REPORT.clusters.length)}}. Scroll inside this table panel to reach the scatter plot quickly.`;
         const headers = columns.map(c => {
           const arrow = state.key === c.key ? (state.dir === "asc" ? " ▲" : " ▼") : "";
           return `<button type="button" class="sort-btn" data-sort-key="${c.key}" style="all:unset;cursor:pointer;user-select:none;display:block;width:100%;font-weight:700;">${c.label}${arrow}</button>`;
