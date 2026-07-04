@@ -43,7 +43,7 @@ from common_config import (
 # ----------------------------------------------------------------------------
 DEFAULT_QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
 QUERY_FOLDER = DEFAULT_QUERY_FOLDER          # S3 subfolder name for this query
-QUERY_TEXT   = "Advanced preemptive medicine and dynamic drug discovery platforms, Mebyo sub-clinical pre-disease state AI models, healthcare digital twins utilizing multimodal lifelog data and PHR networks, generative molecular design via medical LLMs, novel therapeutic modalities including nucleic acids, mRNA vaccines, and genome editing, high-throughput biofoundries, transdisciplinary clinical data harmonization, implementation science for personalized preventive medicine, ELSI in predictive healthcare artificial intelligence."
+QUERY_TEXT   = "Transcendent culture and language frameworks, cross-lingual semantic search, multilingual cognitive diversity, trilingualism and linguistic pluralism, computational sociolinguistics tracking cultural evolution, digital humanities text mining, humanities-STEM convergence, mitigating Anglocentric cultural bias in LLMs, cross-cultural knowledge graphs, natural language semantics preserving contextual nuance."
 THRESHOLD    = 0.50                         # min cosine similarity to 
 MIN_SIZE     = 30                           # min papers per micro cluster
 
