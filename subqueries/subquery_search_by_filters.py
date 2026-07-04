@@ -48,7 +48,7 @@ from common_config import (
 # ----------------------------------------------------------------------------
 DEFAULT_QUERY_FOLDER = DEFAULT_QUERY_FOLDER_FILTERS
 DEFAULT_FILTERS = ["ave_py>=2022", "recency_py>=0.4"]
-MIN_SIZE_DEFAULT = 30
+MIN_SIZE_DEFAULT = 50
 
 # ----------------------------------------------------------------------------
 # CONFIG
