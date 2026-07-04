@@ -647,6 +647,7 @@ def main() -> None:
 
   micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
   pub_col = pick_col(micro_rep, ["publications"], required=True)
+  avg_py_col = pick_col(micro_rep, ["ave_py", "avg_publication_year", "average_publication_year"], required=False)
   avg_cit_col = pick_col(micro_rep, ["ave_citations", "avg_citations", "average_citations"], required=False)
   rank_col = pick_col(
     micro_rep,
@@ -656,10 +657,16 @@ def main() -> None:
   recency_col = pick_col(micro_rep, ["recency_py", "recency"], required=False)
   japan_col = pick_col(micro_rep, ["japan_count", "japan"], required=False)
   macro_col = pick_col(micro_rep, ["macro_cluster"], required=False)
+  if avg_py_col:
+    print("[config] avg publication year source column:", avg_py_col)
+  else:
+    print("[warn] no avg publication year column found in cluster_report_micro")
 
   micro_rep = micro_rep.copy()
   micro_rep[micro_id_col] = micro_rep[micro_id_col].astype("int64")
   micro_rep[pub_col] = pd.to_numeric(micro_rep[pub_col], errors="coerce")
+  if avg_py_col:
+    micro_rep[avg_py_col] = pd.to_numeric(micro_rep[avg_py_col], errors="coerce")
   if avg_cit_col:
     micro_rep[avg_cit_col] = pd.to_numeric(micro_rep[avg_cit_col], errors="coerce")
   if rank_col:
@@ -691,13 +698,6 @@ def main() -> None:
   if "avg_citation" in insts.columns:
     insts["avg_citation"] = pd.to_numeric(insts["avg_citation"], errors="coerce")
 
-  avg_year_by_micro = (
-    papers.dropna(subset=["publication_year"])
-    .groupby("micro_cluster", as_index=False)["publication_year"]
-    .mean()
-    .rename(columns={"publication_year": "avg_publication_year"})
-  )
-
   names_map: dict[int, dict[str, str]] = {}
   if not names.empty and "micro_cluster" in names.columns:
     n = names.copy()
@@ -715,12 +715,8 @@ def main() -> None:
     k["cluster"] = k["cluster"].astype("int64")
     kw_map = dict(zip(k["cluster"], k["keywords"].fillna("")))
 
-  merged = micro_rep.merge(avg_year_by_micro, left_on=micro_id_col, right_on="micro_cluster", how="left")
-  if "micro_cluster_y" in merged.columns:
-    merged = merged.drop(columns=["micro_cluster_y"])
-  if "micro_cluster_x" in merged.columns:
-    merged = merged.rename(columns={"micro_cluster_x": "micro_cluster"})
-  elif micro_id_col != "micro_cluster":
+  merged = micro_rep.copy()
+  if micro_id_col != "micro_cluster":
     merged = merged.rename(columns={micro_id_col: "micro_cluster"})
 
   sort_rank_col = rank_col if rank_col else pub_col
@@ -789,7 +785,7 @@ def main() -> None:
 
     avg_cit = float(getattr(r, avg_cit_col)) if avg_cit_col and pd.notna(getattr(r, avg_cit_col)) else float("nan")
     rank_score = float(getattr(r, rank_col)) if rank_col and pd.notna(getattr(r, rank_col)) else float("nan")
-    avg_year = float(r.avg_publication_year) if pd.notna(r.avg_publication_year) else float("nan")
+    avg_year = float(getattr(r, avg_py_col)) if avg_py_col and pd.notna(getattr(r, avg_py_col)) else float("nan")
     recency = float(getattr(r, recency_col)) if recency_col and pd.notna(getattr(r, recency_col)) else float("nan")
     japan = float(getattr(r, japan_col)) if japan_col and pd.notna(getattr(r, japan_col)) else float("nan")
 
