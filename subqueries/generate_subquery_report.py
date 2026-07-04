@@ -334,7 +334,7 @@ def build_html(report_json: str) -> str:
       const head = `<tr>${{headers.map(h => `<th>${{h}}</th>`).join("")}}</tr>`;
       const body = rows.map(r => {{
         const cls = r.highlight ? ' class="highlight-row"' : "";
-        return `<tr${{cls}}><td>${{r.label}}</td><td>${{fmtInt(r.freq)}}</td></tr>`;
+          return `<tr${{cls}}><td>${{r.label}}</td><td>${{fmtInt(r.freq)}}</td><td>${{fmtNumber(r.avg_publication_year, 1)}}</td><td>${{fmtNumber(r.avg_citation, 2)}}</td></tr>`;
       }}).join("");
       return `<table><thead>${{head}}</thead><tbody>${{body}}</tbody></table>`;
     }}
@@ -371,6 +371,8 @@ def build_html(report_json: str) -> str:
         .map(r => ({
           label: r.country,
           freq: r.freq,
+          avg_publication_year: r.avg_publication_year,
+          avg_citation: r.avg_citation,
           highlight: String(r.country || "").toLowerCase() === "japan",
         }));
 
@@ -379,6 +381,8 @@ def build_html(report_json: str) -> str:
         .map(r => ({
           label: r.institution,
           freq: r.freq,
+          avg_publication_year: r.avg_publication_year,
+          avg_citation: r.avg_citation,
           highlight: String(r.institution || "").toLowerCase().includes("tokyo"),
         }));
 
@@ -396,12 +400,12 @@ def build_html(report_json: str) -> str:
 
         <div class=\"section\">
           <h3>Countries</h3>
-          ${{tableHtmlRows(["Country", "Count"], countryRows)}}
+          ${{tableHtmlRows(["Country", "Count", "Avg Publication Year", "Avg Citation"], countryRows)}}
         </div>
 
         <div class=\"section\">
           <h3>Institutions</h3>
-          ${{tableHtmlRows(["Institution", "Count"], instRows)}}
+          ${{tableHtmlRows(["Institution", "Count", "Avg Publication Year", "Avg Citation"], instRows)}}
         </div>
       `;
     }}
@@ -634,11 +638,19 @@ def main() -> None:
     countries = countries.copy()
     countries["micro_cluster"] = countries["micro_cluster"].astype("int64")
     countries["freq"] = pd.to_numeric(countries["freq"], errors="coerce")
+    if "avg_publication_year" in countries.columns:
+      countries["avg_publication_year"] = pd.to_numeric(countries["avg_publication_year"], errors="coerce")
+    if "avg_citation" in countries.columns:
+      countries["avg_citation"] = pd.to_numeric(countries["avg_citation"], errors="coerce")
     countries["country"] = countries["country"].map(iso2_to_country_name)
 
     insts = insts.copy()
     insts["micro_cluster"] = insts["micro_cluster"].astype("int64")
     insts["freq"] = pd.to_numeric(insts["freq"], errors="coerce")
+    if "avg_publication_year" in insts.columns:
+      insts["avg_publication_year"] = pd.to_numeric(insts["avg_publication_year"], errors="coerce")
+    if "avg_citation" in insts.columns:
+      insts["avg_citation"] = pd.to_numeric(insts["avg_citation"], errors="coerce")
 
     avg_year_by_micro = (
         papers.dropna(subset=["publication_year"])
@@ -693,7 +705,12 @@ def main() -> None:
     c_sorted = countries.sort_values(["micro_cluster", "freq", "country"], ascending=[True, False, True])
     for mid, grp in c_sorted.groupby("micro_cluster"):
         countries_by_micro[int(mid)] = [
-        {"country": sanitize_text(r.country), "freq": int(r.freq) if pd.notna(r.freq) else 0}
+        {
+          "country": sanitize_text(r.country),
+          "freq": int(r.freq) if pd.notna(r.freq) else 0,
+          "avg_publication_year": float(getattr(r, "avg_publication_year", float("nan"))) if pd.notna(getattr(r, "avg_publication_year", float("nan"))) else None,
+          "avg_citation": float(getattr(r, "avg_citation", float("nan"))) if pd.notna(getattr(r, "avg_citation", float("nan"))) else None,
+        }
             for r in grp.itertuples(index=False)
         if not is_blank_like(getattr(r, "country", ""))
         ]
@@ -702,7 +719,12 @@ def main() -> None:
     i_sorted = insts.sort_values(["micro_cluster", "freq", "institution"], ascending=[True, False, True])
     for mid, grp in i_sorted.groupby("micro_cluster"):
         insts_by_micro[int(mid)] = [
-            {"institution": sanitize_text(r.institution), "freq": int(r.freq) if pd.notna(r.freq) else 0}
+            {
+              "institution": sanitize_text(r.institution),
+              "freq": int(r.freq) if pd.notna(r.freq) else 0,
+              "avg_publication_year": float(getattr(r, "avg_publication_year", float("nan"))) if pd.notna(getattr(r, "avg_publication_year", float("nan"))) else None,
+              "avg_citation": float(getattr(r, "avg_citation", float("nan"))) if pd.notna(getattr(r, "avg_citation", float("nan"))) else None,
+            }
             for r in grp.itertuples(index=False)
         ]
 

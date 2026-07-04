@@ -119,8 +119,12 @@ def main():
     write(
         run_sql(
             f"""
-            SELECT micro_cluster, country, freq FROM (
-                SELECT micro_cluster, country, COUNT(*) AS freq,
+            SELECT micro_cluster, country, freq, avg_publication_year, avg_citation FROM (
+                SELECT micro_cluster,
+                       country,
+                       COUNT(*) AS freq,
+                       ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
+                       ROUND(AVG(citations), 2) AS avg_citation,
                        ROW_NUMBER() OVER (PARTITION BY micro_cluster
                                           ORDER BY COUNT(*) DESC, country) AS rn
                 FROM article_report
@@ -137,8 +141,12 @@ def main():
     write(
         run_sql(
             f"""
-            SELECT micro_cluster, institution, freq FROM (
-                SELECT micro_cluster, institution, COUNT(*) AS freq,
+            SELECT micro_cluster, institution, freq, avg_publication_year, avg_citation FROM (
+                SELECT micro_cluster,
+                       institution,
+                       COUNT(*) AS freq,
+                       ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
+                       ROUND(AVG(citations), 2) AS avg_citation,
                        ROW_NUMBER() OVER (PARTITION BY micro_cluster
                                           ORDER BY COUNT(*) DESC, institution) AS rn
                 FROM article_report
