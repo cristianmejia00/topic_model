@@ -8,7 +8,6 @@ Checks performed:
 4) samples of problematic IDs
 
 Usage:
-    .venv/bin/python audit_athena_hierarchy.py
     .venv/bin/python audit_athena_hierarchy.py --database q20260629
 """
 
@@ -19,13 +18,12 @@ import argparse
 import awswrangler as wr
 
 
-DEFAULT_DATABASE = "q20260629"
 DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit hierarchy consistency in Athena tables.")
-    parser.add_argument("--database", default=DEFAULT_DATABASE, help="Glue/Athena database name")
+    parser.add_argument("--database", required=True, help="Glue/Athena database name")
     parser.add_argument("--staging", default=DEFAULT_STAGING, help="Athena query output S3 path")
     parser.add_argument(
         "--show-limit",

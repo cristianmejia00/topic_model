@@ -8,10 +8,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from macro_palette import color_for_macro, load_macro_color_map
+from root_common_config import get_root_paths
 
 # same values as in plot_clusters.py
-IN_DIR       = "s3://openalex-outputs/classification/q20260629/bertopic/images/"
-MICRO_REPORT = "s3://openalex-outputs/classification/q20260629/cluster_report_micro/"
+ROOT_PATHS = get_root_paths()
+IN_DIR       = ROOT_PATHS.bertopic_images_root
+MICRO_REPORT = ROOT_PATHS.micro_report
+MACRO_COLOR_PATH = ROOT_PATHS.cluster_color_macro
 
 micro = wr.s3.read_parquet(f"{IN_DIR}micro/").rename(
     columns={"x_coords": "x", "y_coords": "y"})
@@ -20,7 +23,7 @@ micro = micro.merge(rep, left_on="cluster", right_on="micro_cluster", how="left"
 
 target = micro["macro_cluster"].value_counts().idxmax()   # largest macro
 hit = micro["macro_cluster"] == target
-macro_color_map = load_macro_color_map()
+macro_color_map = load_macro_color_map(path=MACRO_COLOR_PATH)
 target_color = color_for_macro(target, macro_color_map)
 
 plt.figure(figsize=(10, 10))

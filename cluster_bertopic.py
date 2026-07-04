@@ -30,6 +30,8 @@ import uuid
 import numpy as np
 import pandas as pd
 
+from root_common_config import get_root_paths
+
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
@@ -71,10 +73,12 @@ UMAP_MIN_DIST   = 0.1
 UMAP_SEED       = 42             # set None for a faster (parallel) non-reproducible fit
 
 # I/O
-ATHENA_DATABASE = "q20260629"
+ROOT_PATHS = get_root_paths()
+
+ATHENA_DATABASE = ROOT_PATHS.database
 S3_STAGING      = "s3://openalex-outputs/athena-staging/"
-MICRO_REPORT    = "s3://openalex-outputs/classification/q20260629/cluster_report_micro/"  # publication weights
-OUT_DIR         = "s3://openalex-outputs/classification/q20260629/bertopic/"
+MICRO_REPORT    = ROOT_PATHS.micro_report  # publication weights
+OUT_DIR         = ROOT_PATHS.bertopic_root
 LOCAL_CACHE     = "./_bertopic_cache"
 
 

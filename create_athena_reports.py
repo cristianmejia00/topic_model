@@ -8,9 +8,8 @@ Tables created in order:
 4) cluster_report_macro
 
 Usage:
-    .venv/bin/python create_athena_reports.py
-    .venv/bin/python create_athena_reports.py --overwrite
     .venv/bin/python create_athena_reports.py --database q20260629
+    .venv/bin/python create_athena_reports.py --database q20260629 --overwrite
 
 Notes:
 - Without --overwrite, CTAS will fail if target table/location already exists.
@@ -28,10 +27,8 @@ import awswrangler as wr
 import boto3
 
 
-DEFAULT_DATABASE = "q20260629"
 DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
 DEFAULT_WORKGROUP = "primary"
-BASE = "s3://openalex-outputs/classification/q20260629/"
 
 
 @dataclass(frozen=True)
@@ -41,13 +38,15 @@ class TableSpec:
     sql: str
 
 
-def build_table_specs() -> list[TableSpec]:
+def build_table_specs(database: str) -> list[TableSpec]:
+    base = f"s3://openalex-outputs/classification/{database}/"
+
     article_sql = f"""
 CREATE TABLE article_report
 WITH (
     format = 'PARQUET',
     partitioned_by = ARRAY['publication_year'],
-    external_location = '{BASE}article_report/'
+    external_location = '{base}article_report/'
 ) AS
 SELECT
     ns.id,
@@ -71,7 +70,7 @@ CREATE TABLE cluster_report_micro
 WITH (
     format = 'PARQUET',
     write_compression = 'SNAPPY',
-    external_location = '{BASE}cluster_report_micro/'
+    external_location = '{base}cluster_report_micro/'
 )
 AS
 WITH ranked AS (
@@ -118,7 +117,7 @@ CREATE TABLE cluster_report_meso
 WITH (
     format = 'PARQUET',
     write_compression = 'SNAPPY',
-    external_location = '{BASE}cluster_report_meso/'
+    external_location = '{base}cluster_report_meso/'
 )
 AS
 WITH ranked AS (
@@ -165,7 +164,7 @@ CREATE TABLE cluster_report_macro
 WITH (
     format = 'PARQUET',
     write_compression = 'SNAPPY',
-    external_location = '{BASE}cluster_report_macro/'
+    external_location = '{base}cluster_report_macro/'
 )
 AS
 WITH ranked AS (
@@ -208,10 +207,10 @@ ORDER BY publications DESC
 """.strip()
 
     return [
-        TableSpec("article_report", f"{BASE}article_report/", article_sql),
-        TableSpec("cluster_report_micro", f"{BASE}cluster_report_micro/", micro_sql),
-        TableSpec("cluster_report_meso", f"{BASE}cluster_report_meso/", meso_sql),
-        TableSpec("cluster_report_macro", f"{BASE}cluster_report_macro/", macro_sql),
+        TableSpec("article_report", f"{base}article_report/", article_sql),
+        TableSpec("cluster_report_micro", f"{base}cluster_report_micro/", micro_sql),
+        TableSpec("cluster_report_meso", f"{base}cluster_report_meso/", meso_sql),
+        TableSpec("cluster_report_macro", f"{base}cluster_report_macro/", macro_sql),
     ]
 
 
@@ -245,7 +244,7 @@ def run_athena_query(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create article/cluster Athena report tables.")
-    parser.add_argument("--database", default=DEFAULT_DATABASE, help="Glue/Athena database name.")
+    parser.add_argument("--database", required=True, help="Glue/Athena database name.")
     parser.add_argument("--staging", default=DEFAULT_STAGING, help="Athena query result S3 path.")
     parser.add_argument("--workgroup", default=DEFAULT_WORKGROUP, help="Athena workgroup.")
     parser.add_argument(
@@ -258,7 +257,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    specs = build_table_specs()
+    specs = build_table_specs(args.database)
     athena = boto3.client("athena")
 
     print(f"[config] database={args.database} workgroup={args.workgroup}")

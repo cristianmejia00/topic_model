@@ -35,12 +35,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from macro_palette import color_for_macro, load_macro_color_map
+from root_common_config import get_root_paths
 
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-IN_DIR       = "s3://openalex-outputs/classification/q20260629/bertopic/images/"
-MICRO_REPORT = "s3://openalex-outputs/classification/q20260629/cluster_report_micro/"
+ROOT_PATHS = get_root_paths()
+IN_DIR       = ROOT_PATHS.bertopic_images_root
+MICRO_REPORT = ROOT_PATHS.micro_report
+MACRO_COLOR_PATH = ROOT_PATHS.cluster_color_macro
 
 OUT_DIR = Path(__file__).resolve().parent
 OUT_PNG = OUT_DIR / "cluster_map.png"
@@ -70,7 +73,7 @@ TITLE    = "Publication cluster map — micro coloured by macro"
 # ----------------------------------------------------------------------------
 def load_palette(keys):
     palette = {}
-    color_map = load_macro_color_map()
+    color_map = load_macro_color_map(path=MACRO_COLOR_PATH)
     for k in keys:
         palette[k] = color_for_macro(int(k), color_map)
     return palette

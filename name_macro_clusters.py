@@ -23,18 +23,21 @@ from collections import Counter
 import awswrangler as wr
 import pandas as pd
 
+from root_common_config import get_root_paths
+
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-BASE = "s3://openalex-outputs/classification/q20260629/"
-KEYWORDS_DIR = f"{BASE}bertopic/"
+ROOT_PATHS = get_root_paths()
+BASE = ROOT_PATHS.classification_root
+KEYWORDS_DIR = ROOT_PATHS.bertopic_root
 KEY_FILE = ".key"
 
-MACRO_REPORT_PATH = f"{BASE}cluster_report_macro/"
-MESO_REPORT_PATH = f"{BASE}cluster_report_meso/"
+MACRO_REPORT_PATH = ROOT_PATHS.macro_report
+MESO_REPORT_PATH = ROOT_PATHS.meso_report
 
-OUT_PATH = f"{BASE}cluster_name_macro/"
+OUT_PATH = ROOT_PATHS.cluster_name_macro
 
 MODEL = "gpt-4o-mini"
 

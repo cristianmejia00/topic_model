@@ -13,10 +13,12 @@ from __future__ import annotations
 import awswrangler as wr
 import pandas as pd
 
-from macro_palette import BASE, stable_color_hex
+from macro_palette import stable_color_hex
+from root_common_config import get_root_paths
 
-MACRO_REPORT_PATH = f"{BASE}cluster_report_macro/"
-OUT_PATH = f"{BASE}cluster_color_macro/"
+ROOT_PATHS = get_root_paths()
+MACRO_REPORT_PATH = ROOT_PATHS.macro_report
+OUT_PATH = ROOT_PATHS.cluster_color_macro
 
 
 def main() -> None:

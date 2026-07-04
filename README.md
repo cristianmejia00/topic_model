@@ -43,6 +43,12 @@ retrofit, plotting, and subquery report generation.
 
 ## Order of Code Execution
 
+Root entrypoint behavior:
+
+- Use `run_root_pipeline.py` for root-level scripts.
+- `--database` is required (no default).
+- If output targets already exist, execution fails unless `--force` is provided.
+
 ### A) Core Pipeline
 
 1. `annex/parallel_louvain.ipynb`
@@ -87,10 +93,16 @@ pip install -r requirements.txt
 source .venv/bin/activate
 
 # Core pipeline
-python create_athena_reports.py --overwrite
-python audit_athena_hierarchy.py
-python cluster_bertopic.py
-python main_plots/plot_images.py
+python run_root_pipeline.py --database q20260629 --step athena_reports --force
+python run_root_pipeline.py --database q20260629 --step audit_hierarchy
+python run_root_pipeline.py --database q20260629 --step bertopic --force
+python run_root_pipeline.py --database q20260629 --step plot_images --force
+
+# Optional root steps
+python run_root_pipeline.py --database q20260629 --step macro_colors --force
+python run_root_pipeline.py --database q20260629 --step macro_names --force
+python run_root_pipeline.py --database q20260629 --step plot_embeds --force
+python run_root_pipeline.py --database q20260629 --step check_macro_plot --force
 
 # Subquery example (topic-based)
 python subqueries/subquery_search_by_topic.py

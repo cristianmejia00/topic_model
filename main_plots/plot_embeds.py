@@ -26,8 +26,16 @@ Requires: sentence-transformers, umap-learn, numpy, pandas, awswrangler, pyarrow
 
 from __future__ import annotations
 import os
+from pathlib import Path
+import sys
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from root_common_config import get_root_paths
 
 # ----------------------------------------------------------------------------
 # CONFIG  --  must match the values used in cluster_bertopic.py
@@ -52,10 +60,12 @@ UMAP_MIN_DIST  = 0.1
 UMAP_SEED      = 42
 
 # I/O
-ATHENA_DATABASE = "q20260629"
+ROOT_PATHS = get_root_paths()
+
+ATHENA_DATABASE = ROOT_PATHS.database
 S3_STAGING      = "s3://openalex-outputs/athena-staging/"
-IN_DIR          = "s3://openalex-outputs/classification/q20260629/bertopic/"          # existing keywords
-OUT_DIR         = "s3://openalex-outputs/classification/q20260629/bertopic/images/"   # viz-only assets
+IN_DIR          = ROOT_PATHS.bertopic_root          # existing keywords
+OUT_DIR         = ROOT_PATHS.bertopic_images_root   # viz-only assets
 LOCAL_CACHE     = "./_viz_cache"
 
 LEVEL_COL = {"micro": "micro_cluster", "meso": "meso_cluster", "macro": "macro_cluster"}
