@@ -43,7 +43,7 @@ retrofit, plotting, and subquery report generation.
   - No-filter export over all micro clusters.
 - `subqueries/name_clusters.py`
   - Names micro clusters in a selected subquery.
-- `subqueries/generate_subquery_report.py`
+- `subqueries/generate_subquery_html_report.py`
   - Builds/publishes HTML report for one subquery.
 - `subqueries/explore_subquery.py`
   - Terminal explorer for generated subquery outputs.
@@ -76,7 +76,7 @@ Optional diagnostics after step 5:
    - or `subqueries/subquery_search_by_filters.py`
    - or `subqueries/subquery_search_passthrough.py`
 2. `subqueries/name_clusters.py`
-3. `subqueries/generate_subquery_report.py`
+3. `subqueries/generate_subquery_html_report.py`
 4. `subqueries/explore_subquery.py`
 
 ## Setup
@@ -121,7 +121,7 @@ python run_root_pipeline.py --database q20260629 --step check_macro_plot --force
 # Subquery example (topic-based)
 python subqueries/subquery_search_by_topic.py
 python subqueries/name_clusters.py
-python subqueries/generate_subquery_report.py
+python subqueries/generate_subquery_html_report.py
 python subqueries/explore_subquery.py
 ```
 

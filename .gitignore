@@ -74,6 +74,7 @@ celerybeat.pid
 # ── Data / model artefacts ────────────────────────────────────────────────────
 _bertopic_cache/
 _viz_cache/
+excel/
 *.npy
 *.npz
 *.pkl

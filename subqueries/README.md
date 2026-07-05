@@ -15,7 +15,7 @@ naming its micro clusters, generating a static HTML report, and exploring result
   - No-filter export of all micro clusters.
 - `name_clusters.py`
   - LLM-based naming for micro clusters in a selected query folder.
-- `generate_subquery_report.py`
+- `generate_subquery_html_report.py`
   - Builds a static HTML report and uploads it to S3.
 - `explore_subquery.py`
   - Terminal explorer for the generated subsets.
@@ -66,7 +66,10 @@ python subqueries/run_subquery_search.py --search passthrough --database "$DB" -
 python subqueries/name_clusters.py --database "$DB" --query-folder "$QUERY_FOLDER"
 
 # 3) build and publish report
-python subqueries/generate_subquery_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
+python subqueries/generate_subquery_html_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
+
+# 3b) build local Excel report pack (4 files)
+python generate_subquery_excel_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
 
 # 4) inspect in terminal
 python subqueries/explore_subquery.py --database "$DB" --query-folder "$QUERY_FOLDER"
@@ -115,6 +118,13 @@ Local report output:
 
 - `docs/{query_folder}/report/index.html`
 
+Local Excel output:
+
+- `excel/{database}/{query_folder}/article_report_top10.xlsx`
+- `excel/{database}/{query_folder}/cluster_profiles.xlsx`
+- `excel/{database}/{query_folder}/countries_summary.xlsx`
+- `excel/{database}/{query_folder}/institutions_summary.xlsx`
+
 ## Quick Validation
 
 After editing subquery scripts, run:
@@ -127,6 +137,6 @@ After editing subquery scripts, run:
 	subqueries/subquery_search_by_filters.py \
 	subqueries/subquery_search_passthrough.py \
 	subqueries/name_clusters.py \
-	subqueries/generate_subquery_report.py \
+	subqueries/generate_subquery_html_report.py \
 	subqueries/explore_subquery.py
 ```

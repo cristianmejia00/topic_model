@@ -1,5 +1,5 @@
 """
-generate_subquery_report.py
+generate_subquery_html_report.py
 ===========================
 Build a static HTML report for one subquery and publish it both locally (for GitHub)
 and to S3 under the query's report/ prefix.
