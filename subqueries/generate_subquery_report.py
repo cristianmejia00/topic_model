@@ -60,8 +60,8 @@ LOCAL_DOCS_ROOT = ROOT / "docs"
 
 TOP_TITLES = 10
 USE_MACRO_CLUSTER = True
-TITLE = "Resilience"
-SUBTITLE = "OpenAlex 20260625 | Articles | 1990-2026 | ‘resilien*’ | Direct Citations | Louvain Clustering"
+TITLE = "Planetary Health"
+SUBTITLE = "OpenAlex 20260625 | Articles | 1990-2026 | ‘planetary health|one health’| Direct Citations | Louvain Clustering"
 
 
 def parse_args() -> argparse.Namespace:
