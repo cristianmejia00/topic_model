@@ -60,8 +60,8 @@ LOCAL_DOCS_ROOT = ROOT / "docs"
 
 TOP_TITLES = 10
 USE_MACRO_CLUSTER = True
-TITLE = "Subquery Report"
-SUBTITLE = "Interactive cluster report"
+TITLE = "Quantum"
+SUBTITLE = "OpenAlex 20260625 | Articles | 1990-2026 | 'quantum' | Direct Citations | Louvain Clustering"
 
 
 def parse_args() -> argparse.Namespace:
