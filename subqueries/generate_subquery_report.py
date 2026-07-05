@@ -358,6 +358,11 @@ def build_html(report_json: str) -> str:
 </head>
 <body>
   <div class=\"wrap\">
+    <div class=\"report-head\">
+      <h1 class=\"report-title\" id=\"report-title\"></h1>
+      <p class=\"report-subtitle\" id=\"report-subtitle\"></p>
+    </div>
+
     <div class=\"tabs\">
       <button id=\"btn-tab1\" class=\"tab-btn active\">Clusters</button>
       <button id=\"btn-tab2\" class=\"tab-btn\">Summary & Scatter</button>
@@ -662,11 +667,6 @@ def build_html(report_json: str) -> str:
   </script>
 </body>
 </html>
-    <div class="report-head">
-      <h1 class="report-title" id="report-title"></h1>
-      <p class="report-subtitle" id="report-subtitle"></p>
-    </div>
-
 """
     rendered = template.replace("{{", "{").replace("}}", "}")
     return rendered.replace("__REPORT_JSON__", report_json)
