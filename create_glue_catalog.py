@@ -7,12 +7,20 @@ This script:
    - s3://openalex-outputs/athena/{database}/
    - s3://openalex-outputs/cwts/{database}/network_assets/{version}/
 3) Runs the crawler and waits for completion (unless --no-wait).
+4) Optional hard reset mode can delete crawler + all tables + database first.
 
 Usage:
     .venv/bin/python create_glue_catalog.py \
         --database q20260629 \
         --version version3 \
         --crawler-role AWSGlueServiceRole-openalex
+
+    # Destructive reset (recreate database and recrawl from scratch)
+    .venv/bin/python create_glue_catalog.py \
+        --database q20260629 \
+        --version version3 \
+        --crawler-role AWSGlueServiceRole-openalex \
+        --hard-reset
 
 Notes:
 - The IAM role must allow Glue crawler execution and read access to both S3 roots.
@@ -77,6 +85,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Start crawler and return immediately without waiting.",
     )
+    parser.add_argument(
+        "--hard-reset",
+        action="store_true",
+        help=(
+            "Delete the selected crawler (if it exists), then delete all Glue "
+            "tables in the database and drop the database before recreating. "
+            "Use with care."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -115,6 +132,44 @@ def ensure_database(glue, database: str) -> None:
 
     glue.create_database(DatabaseInput={"Name": database})
     print(f"[create] database created: {database}")
+
+
+def delete_crawler_if_exists(glue, crawler_name: str) -> None:
+    try:
+        glue.get_crawler(Name=crawler_name)
+    except glue.exceptions.EntityNotFoundException:
+        print(f"[reset] crawler not found (skip): {crawler_name}")
+        return
+
+    glue.delete_crawler(Name=crawler_name)
+    print(f"[reset] crawler deleted: {crawler_name}")
+
+
+def list_database_tables(glue, database: str) -> list[str]:
+    names: list[str] = []
+    paginator = glue.get_paginator("get_tables")
+    for page in paginator.paginate(DatabaseName=database):
+        for table in page.get("TableList", []):
+            name = table.get("Name")
+            if name:
+                names.append(name)
+    return names
+
+
+def reset_database(glue, database: str) -> None:
+    try:
+        glue.get_database(Name=database)
+    except glue.exceptions.EntityNotFoundException:
+        print(f"[reset] database not found (skip): {database}")
+        return
+
+    table_names = list_database_tables(glue, database)
+    for name in table_names:
+        glue.delete_table(DatabaseName=database, Name=name)
+        print(f"[reset] table deleted: {database}.{name}")
+
+    glue.delete_database(Name=database)
+    print(f"[reset] database deleted: {database}")
 
 
 def ensure_crawler(
@@ -219,6 +274,7 @@ def main() -> None:
     print(f"[config] version={args.version}")
     print(f"[config] crawler_name={crawler_name}")
     print(f"[config] crawler_role={args.crawler_role}")
+    print(f"[config] hard_reset={args.hard_reset}")
     print("[config] targets:")
     for path in s3_paths:
         print(f"  - {path}")
@@ -229,6 +285,10 @@ def main() -> None:
     print(f"[config] crawler_role_resolved={crawler_role}")
 
     try:
+        if args.hard_reset:
+            delete_crawler_if_exists(glue, crawler_name)
+            reset_database(glue, args.database)
+
         ensure_database(glue, args.database)
         ensure_crawler(
             glue,
