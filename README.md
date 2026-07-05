@@ -19,6 +19,10 @@ retrofit, plotting, and subquery report generation.
 - `create_glue_catalog.py`
   - Creates/updates Glue Catalog database + crawler for source prefixes required
     before Athena report table generation.
+- `migrate_meso_as_micro.py`
+  - Optional migration step that promotes `meso_cluster` to effective
+    `micro_cluster` in the canonical Louvain source table while archiving the
+    original table for rollback.
 
 ## Plot Scripts
 
@@ -98,6 +102,9 @@ source .venv/bin/activate
 # Bootstrap Glue catalog tables from source prefixes
 python create_glue_catalog.py --database q20260629 --version version3 --crawler-role AWSGlueServiceRole-openalex
 # Tip: if your role is under /service-role/, passing the full role ARN is safest.
+
+# Optional: for overly fine-grained micro solutions, migrate meso -> micro
+python run_root_pipeline.py --database q20260629 --version version3 --step meso_as_micro
 
 # Core pipeline
 python run_root_pipeline.py --database q20260629 --step athena_reports --force

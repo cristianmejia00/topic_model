@@ -28,6 +28,7 @@ from root_common_config import (
 
 
 ALL_STEPS = [
+    "meso_as_micro",
     "athena_reports",
     "audit_hierarchy",
     "bertopic",
@@ -47,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         "--database",
         required=True,
         help="Classification database id, e.g. q20260629 (required).",
+    )
+    parser.add_argument(
+        "--version",
+        default=None,
+        help="Optional version tag required for meso_as_micro step, e.g. version3.",
     )
     parser.add_argument(
         "--step",
@@ -83,7 +89,11 @@ def step_outputs(step: str, paths: RootPaths, repo_root: Path) -> tuple[list[str
     s3: list[str] = []
     local: list[Path] = []
 
-    if step == "athena_reports":
+    if step == "meso_as_micro":
+        # Migration step enforces idempotency/lineage at table level.
+        pass
+
+    elif step == "athena_reports":
         s3.extend([
             paths.article_report,
             f"{paths.classification_root}cluster_report_micro/",
@@ -151,6 +161,23 @@ def step_outputs(step: str, paths: RootPaths, repo_root: Path) -> tuple[list[str
 
 def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[str]:
     py = sys.executable
+    if step == "meso_as_micro":
+        cmd = [
+            py,
+            str(repo_root / "migrate_meso_as_micro.py"),
+            "--database",
+            args.database,
+            "--version",
+            str(args.version),
+            "--staging",
+            args.staging,
+            "--workgroup",
+            args.workgroup,
+        ]
+        if args.force:
+            cmd.append("--force")
+        return cmd
+
     if step == "athena_reports":
         cmd = [
             py,
@@ -193,6 +220,9 @@ def main() -> None:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent
     paths = RootPaths(database=args.database)
+
+    if "meso_as_micro" in args.step and not str(args.version or "").strip():
+        raise RuntimeError("--version is required when running --step meso_as_micro")
 
     env = os.environ.copy()
     env[DB_ENV_VAR] = args.database

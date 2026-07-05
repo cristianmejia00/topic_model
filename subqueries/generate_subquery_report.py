@@ -59,7 +59,7 @@ MACRO_NAME_PATH = macro_name_path(DATABASE)
 LOCAL_DOCS_ROOT = ROOT / "docs" / DATABASE
 
 TOP_TITLES = 10
-USE_MACRO_CLUSTER = False
+USE_MACRO_CLUSTER = True
 
 
 def parse_args() -> argparse.Namespace:
