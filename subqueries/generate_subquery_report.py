@@ -5,7 +5,7 @@ Build a static HTML report for one subquery and publish it both locally (for Git
 and to S3 under the query's report/ prefix.
 
 Outputs:
-  docs/{QUERY_FOLDER}/report/index.html
+  docs/{DATABASE}/{QUERY_FOLDER}/report/index.html
   s3://.../subqueries/{QUERY_FOLDER}/report/index.html
 
 Requirements addressed:
@@ -56,10 +56,12 @@ QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
 SUBQUERIES_ROOT = subqueries_root(DATABASE)
 KEYWORDS_DIR = keywords_dir(DATABASE)
 MACRO_NAME_PATH = macro_name_path(DATABASE)
-LOCAL_DOCS_ROOT = ROOT / "docs" / DATABASE
+LOCAL_DOCS_ROOT = ROOT / "docs" 
 
 TOP_TITLES = 10
 USE_MACRO_CLUSTER = True
+TITLE = "Subquery Report"
+SUBTITLE = "Interactive cluster report"
 
 
 def parse_args() -> argparse.Namespace:
@@ -211,6 +213,16 @@ def build_html(report_json: str) -> str:
       min-height: 100vh;
     }}
     .wrap {{ max-width: 1440px; margin: 0 auto; padding: 16px; }}
+    .report-head {{
+      margin: 2px 0 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #ffffff, #f9fbfc);
+      box-shadow: 0 3px 14px rgba(0,0,0,0.04);
+    }}
+    .report-title {{ margin: 0 0 6px; font-size: 24px; line-height: 1.25; }}
+    .report-subtitle {{ margin: 0; color: var(--muted); font-size: 14px; }}
     .tabs {{
       display: flex;
       gap: 8px;
@@ -542,7 +554,7 @@ def build_html(report_json: str) -> str:
       }
 
       function render() {
-        meta.textContent = `Rows: ${{fmtInt(REPORT.clusters.length)}}. Scroll inside this table panel to reach the scatter plot quickly.`;
+        meta.textContent = `Documents: ${{fmtInt(REPORT.total_publications)}}; Clusters: ${{fmtInt(REPORT.total_clusters)}}; Macro Clusters: ${{fmtInt(REPORT.total_macro_clusters)}}`;
         const headers = columns.map(c => {
           const arrow = state.key === c.key ? (state.dir === "asc" ? " ▲" : " ▼") : "";
           return `<button type="button" class="sort-btn" data-sort-key="${c.key}" style="all:unset;cursor:pointer;user-select:none;display:block;width:100%;font-weight:700;">${c.label}${arrow}</button>`;
@@ -641,6 +653,8 @@ def build_html(report_json: str) -> str:
     }}
 
     bindTabs();
+    document.getElementById("report-title").textContent = REPORT.title || "Subquery Report";
+    document.getElementById("report-subtitle").textContent = REPORT.subtitle || "";
     buildClusterList();
     buildSummaryTable();
     if (REPORT.clusters.length) selectCluster(REPORT.clusters[0].global_id);
@@ -648,6 +662,11 @@ def build_html(report_json: str) -> str:
   </script>
 </body>
 </html>
+    <div class="report-head">
+      <h1 class="report-title" id="report-title"></h1>
+      <p class="report-subtitle" id="report-subtitle"></p>
+    </div>
+
 """
     rendered = template.replace("{{", "{").replace("}}", "}")
     return rendered.replace("__REPORT_JSON__", report_json)
@@ -873,16 +892,23 @@ def main() -> None:
     )
 
   plot_by_macro = build_plot_data(clusters, use_macro_cluster=USE_MACRO_CLUSTER)
+  total_publications = int(sum(int(c.get("publications", 0) or 0) for c in clusters))
+  total_macro_clusters = len({c.get("macro_cluster") for c in clusters})
 
   report_payload = {
+    "title": TITLE,
+    "subtitle": SUBTITLE,
     "query_folder": QUERY_FOLDER,
     "clusters": clusters,
     "plot_by_macro": plot_by_macro,
+    "total_publications": total_publications,
+    "total_clusters": len(clusters),
+    "total_macro_clusters": total_macro_clusters,
     "use_macro_cluster": USE_MACRO_CLUSTER,
     "scatter_scale": 1.1,
   }
 
-  out_dir = LOCAL_DOCS_ROOT / QUERY_FOLDER / "report"
+  out_dir = LOCAL_DOCS_ROOT / DATABASE / QUERY_FOLDER / "report"
   out_dir.mkdir(parents=True, exist_ok=True)
   html_path = out_dir / "index.html"
   html_path.write_text(build_html(json.dumps(report_payload, ensure_ascii=True)), encoding="utf-8")
