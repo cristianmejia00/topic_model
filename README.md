@@ -16,6 +16,9 @@ retrofit, plotting, and subquery report generation.
 - `cluster_bertopic.py`
   - Generates BERTopic keywords, embeddings, and shared 2D coordinates for
     micro/meso/macro levels.
+- `create_glue_catalog.py`
+  - Creates/updates Glue Catalog database + crawler for source prefixes required
+    before Athena report table generation.
 
 ## Plot Scripts
 
@@ -91,6 +94,9 @@ pip install -r requirements.txt
 
 ```bash
 source .venv/bin/activate
+
+# Bootstrap Glue catalog tables from source prefixes
+python create_glue_catalog.py --database q20260629 --version version3 --crawler-role AWSGlueServiceRole-openalex
 
 # Core pipeline
 python run_root_pipeline.py --database q20260629 --step athena_reports --force
