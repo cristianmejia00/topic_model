@@ -97,6 +97,7 @@ source .venv/bin/activate
 
 # Bootstrap Glue catalog tables from source prefixes
 python create_glue_catalog.py --database q20260629 --version version3 --crawler-role AWSGlueServiceRole-openalex
+# Tip: if your role is under /service-role/, passing the full role ARN is safest.
 
 # Core pipeline
 python run_root_pipeline.py --database q20260629 --step athena_reports --force

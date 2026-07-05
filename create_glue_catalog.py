@@ -84,6 +84,27 @@ def sanitize_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_")
 
 
+def resolve_crawler_role_arn(iam, crawler_role: str) -> str:
+    # Glue CreateCrawler is more reliable with a full role ARN, especially for
+    # roles under the /service-role/ path.
+    role = (crawler_role or "").strip()
+    if role.startswith("arn:aws:iam::") and ":role/" in role:
+        return role
+
+    try:
+        resp = iam.get_role(RoleName=role)
+        arn = resp["Role"]["Arn"]
+        print(f"[resolve] crawler role name -> arn: {arn}")
+        return arn
+    except ClientError as exc:
+        print(
+            "[warn] could not resolve role name to ARN via iam:GetRole; "
+            "using provided value as-is"
+        )
+        print(f"[warn] iam:GetRole error: {exc}")
+        return role
+
+
 def ensure_database(glue, database: str) -> None:
     try:
         glue.get_database(Name=database)
@@ -203,6 +224,9 @@ def main() -> None:
         print(f"  - {path}")
 
     glue = boto3.client("glue")
+    iam = boto3.client("iam")
+    crawler_role = resolve_crawler_role_arn(iam, args.crawler_role)
+    print(f"[config] crawler_role_resolved={crawler_role}")
 
     try:
         ensure_database(glue, args.database)
@@ -210,7 +234,7 @@ def main() -> None:
             glue,
             crawler_name=crawler_name,
             database=args.database,
-            crawler_role=args.crawler_role,
+            crawler_role=crawler_role,
             s3_paths=s3_paths,
         )
         run_crawler(
