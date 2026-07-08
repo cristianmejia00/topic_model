@@ -180,6 +180,7 @@ def build_cluster_table(
     pub_col: str,
     micro_names: pd.DataFrame,
     macro_name_map: dict[int, str],
+    tie_break_col: str | None = None,
 ) -> pd.DataFrame:
     out = df.copy()
     out[id_col] = pd.to_numeric(out[id_col], errors="coerce")
@@ -187,7 +188,16 @@ def build_cluster_table(
     out = out.dropna(subset=[id_col]).copy()
     out[id_col] = out[id_col].astype("int64")
 
-    out = out.sort_values([pub_col, id_col], ascending=[False, True]).reset_index(drop=True)
+    sort_cols = [pub_col]
+    sort_orders = [False]
+    if tie_break_col and tie_break_col in out.columns:
+        out[tie_break_col] = pd.to_numeric(out[tie_break_col], errors="coerce")
+        sort_cols.append(tie_break_col)
+        sort_orders.append(False)
+    sort_cols.append(id_col)
+    sort_orders.append(True)
+
+    out = out.sort_values(sort_cols, ascending=sort_orders).reset_index(drop=True)
     out["display_id"] = range(1, len(out) + 1)
     out["global_id"] = out[id_col]
 
@@ -316,6 +326,11 @@ def main() -> None:
 
     micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
     micro_pub_col = pick_col(micro_rep, ["publications"], required=True)
+    micro_rank_col = pick_col(
+        micro_rep,
+        ["yearly_rank_citations", "ranked_citation", "ranked_citation_score"],
+        required=False,
+    )
     meso_id_col = pick_col(meso_rep, ["meso_cluster", "cluster"], required=True)
     meso_pub_col = pick_col(meso_rep, ["publications"], required=True)
     macro_id_col = pick_col(macro_rep, ["macro_cluster", "cluster"], required=True)
@@ -328,6 +343,7 @@ def main() -> None:
         pub_col=str(micro_pub_col),
         micro_names=micro_names,
         macro_name_map=macro_name_map,
+        tie_break_col=micro_rank_col,
     )
     meso_sheet = build_cluster_table(
         meso_rep,
@@ -336,6 +352,7 @@ def main() -> None:
         pub_col=str(meso_pub_col),
         micro_names=pd.DataFrame(),
         macro_name_map=macro_name_map,
+        tie_break_col=None,
     )
     macro_sheet = build_cluster_table(
         macro_rep,
@@ -344,6 +361,7 @@ def main() -> None:
         pub_col=str(macro_pub_col),
         micro_names=pd.DataFrame(),
         macro_name_map=macro_name_map,
+        tie_break_col=None,
     )
 
     micro_ids = sorted(set(pd.to_numeric(micro_sheet[micro_id_col], errors="coerce").dropna().astype("int64").tolist()))

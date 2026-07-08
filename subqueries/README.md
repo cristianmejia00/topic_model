@@ -69,7 +69,10 @@ python subqueries/name_clusters.py --database "$DB" --query-folder "$QUERY_FOLDE
 python subqueries/generate_subquery_html_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
 
 # 3b) build local Excel report pack (4 files)
-python generate_subquery_excel_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
+python subqueries/generate_subquery_excel_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
+
+# 3c) build UTokyo-focused workbook (2 sheets)
+python subqueries/generate_utokyo_subquery_excel_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
 
 # 4) inspect in terminal
 python subqueries/explore_subquery.py --database "$DB" --query-folder "$QUERY_FOLDER"
@@ -124,6 +127,10 @@ Local Excel output:
 - `excel/{database}/{query_folder}/cluster_profiles.xlsx`
 - `excel/{database}/{query_folder}/countries_summary.xlsx`
 - `excel/{database}/{query_folder}/institutions_summary.xlsx`
+
+Local UTokyo output:
+
+- `utokyo/{database}/{query_folder}/utokyo_cluster_and_articles.xlsx`
 
 ## Quick Validation
 

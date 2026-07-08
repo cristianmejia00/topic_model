@@ -75,6 +75,7 @@ celerybeat.pid
 _bertopic_cache/
 _viz_cache/
 excel/
+utokyo/
 *.npy
 *.npz
 *.pkl
