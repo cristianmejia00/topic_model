@@ -217,7 +217,8 @@ def run_athena_query(
 
 
 def ensure_catalog_sources(settings: Settings, athena, poll_seconds: int) -> None:
-    create_db_sql = f'CREATE DATABASE IF NOT EXISTS "{settings.database}"'
+    # Athena engine v3 follows Trino SQL, where CREATE SCHEMA is the supported form.
+    create_db_sql = f"CREATE SCHEMA IF NOT EXISTS `{settings.database}`"
     qid = run_athena_query(
         athena,
         sql=create_db_sql,

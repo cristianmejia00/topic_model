@@ -28,7 +28,7 @@ This step converts OpenAlex works snapshot JSONL into Parquet datasets for downs
 Set role and run deploy:
 
 ```bash
-export GLUE_JOB_ROLE="arn:aws:iam::<account-id>:role/<glue-job-role>"
+export GLUE_JOB_ROLE="arn:aws:iam::702228044494:role/AWSGlueServiceRole_S3FullAccess"
 
 python 01-from_JSONL_to_Parquet/deploy_glue_jsonl_to_parquet_job.py \
   --job-name openalex_jsonl_to_parquet \
