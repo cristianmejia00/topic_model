@@ -1,0 +1,4 @@
+SNAPSHOT: "2026-06-26"
+QUERY: "q20260629"
+ATHENA_STAGING: "s3://openalex-outputs/athena-staging/"
+ATHENA_WORKGROUP: "primary"
