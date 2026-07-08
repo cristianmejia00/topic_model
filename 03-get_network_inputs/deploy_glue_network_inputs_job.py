@@ -11,6 +11,7 @@ What it does:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import boto3
@@ -20,16 +21,17 @@ from botocore.exceptions import ClientError
 DEFAULT_SCRIPT_S3_PREFIX = "s3://aws-glue-assets-702228044494-ap-northeast-1/scripts/03-get-network-inputs/"
 DEFAULT_JOB_NAME = "openalex_get_network_inputs"
 DEFAULT_GLUE_VERSION = "5.0"
-DEFAULT_WORKER_TYPE = "G.2X"
+DEFAULT_WORKER_TYPE = "G.4X"
 DEFAULT_NUMBER_OF_WORKERS = 10
 DEFAULT_TIMEOUT_MINUTES = 240
 DEFAULT_MAX_CONCURRENT_RUNS = 1
 DEFAULT_MAX_RETRIES = 0
 DEFAULT_JOB_BOOKMARK_OPTION = "job-bookmark-disable"
-DEFAULT_SOURCE_JOB_FOR_ROLE = "edges_to_cwts_format_v3"
 DEFAULT_SHUFFLE_STORAGE_PATH = "s3://openalex-outputs/cwts/spark/"
 DEFAULT_INPUT_PATH_TEMPLATE = "s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/edges_query/"
 DEFAULT_OUTPUT_PATH_TEMPLATE = "s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/"
+
+ROLE_ENV_VAR = "GLUE_JOB_ROLE"
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
@@ -64,16 +66,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--role",
-        default=None,
-        help="Glue IAM role ARN/name to use for the job.",
-    )
-    parser.add_argument(
-        "--source-job-for-role",
-        default=DEFAULT_SOURCE_JOB_FOR_ROLE,
-        help=(
-            "Existing Glue job name to copy role from when --role is omitted. "
-            "Set to empty string to disable lookup."
-        ),
+        default=os.getenv(ROLE_ENV_VAR, "").strip() or None,
+        help=f"Glue IAM role ARN/name. Defaults to ${ROLE_ENV_VAR} if set.",
     )
 
     parser.add_argument("--description", default="Build network input files for Louvain from edges_query parquet.")
@@ -90,27 +84,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-path-template", default=DEFAULT_OUTPUT_PATH_TEMPLATE)
 
     return parser.parse_args()
-
-
-def resolve_role(glue, explicit_role: str | None, source_job_for_role: str | None) -> str:
-    role = str(explicit_role or "").strip()
-    if role:
-        return role
-
-    source_job = str(source_job_for_role or "").strip()
-    if source_job:
-        try:
-            source_job_def = glue.get_job(JobName=source_job)["Job"]
-            source_role = str(source_job_def.get("Role", "")).strip()
-            if source_role:
-                print(f"[resolve] role copied from job {source_job}: {source_role}")
-                return source_role
-        except glue.exceptions.EntityNotFoundException:
-            print(f"[warn] source job not found for role lookup: {source_job}")
-
-    raise RuntimeError(
-        "Unable to resolve Glue role. Provide --role, or set --source-job-for-role to an existing job."
-    )
 
 
 def build_default_arguments(args: argparse.Namespace) -> dict[str, str]:
@@ -159,8 +132,6 @@ def main() -> None:
     s3 = boto3.client("s3")
     glue = boto3.client("glue")
 
-    role = resolve_role(glue, args.role, args.source_job_for_role)
-
     print(f"Uploading script to {script_s3_uri} ...")
     s3.upload_file(str(args.script_local_path), bucket, script_key)
     print("[ok] script uploaded")
@@ -172,7 +143,13 @@ def main() -> None:
     except glue.exceptions.EntityNotFoundException:
         print(f"[create] job does not exist yet: {args.job_name}")
 
-    job_update = build_job_update(args, role, script_s3_uri)
+    resolved_role = args.role or (existing_job or {}).get("Role")
+    if not resolved_role:
+        raise RuntimeError(
+            "Missing Glue role. Provide --role or set GLUE_JOB_ROLE (for new job creation)."
+        )
+
+    job_update = build_job_update(args, resolved_role, script_s3_uri)
 
     if existing_job is None:
         create_payload = {"Name": args.job_name, **job_update}
@@ -184,7 +161,7 @@ def main() -> None:
 
     print("Deployment complete.")
     print(f"Job name: {args.job_name}")
-    print(f"Role: {role}")
+    print(f"Role: {resolved_role}")
     print(f"Script: {script_s3_uri}")
 
 

@@ -48,7 +48,7 @@ Outputs written as tab-delimited text (no header):
 Deploy script applies the notebook-equivalent settings:
 
 - Glue version: `5.0`
-- Worker type: `G.2X`
+- Worker type: `G.4X`
 - Number of workers: `10`
 - Timeout: `240` minutes
 - Auto-scaling: enabled
@@ -57,10 +57,13 @@ Deploy script applies the notebook-equivalent settings:
 
 ## IAM Role
 
-To match the role used by the old notebook job:
+Use the same Glue role pattern as step 01:
 
-- By default, deploy tries to copy role from existing job `edges_to_cwts_format_v3`.
-- Or pass `--role <role-arn-or-name>` explicitly.
+```bash
+export GLUE_JOB_ROLE="arn:aws:iam::702228044494:role/AWSGlueServiceRole_S3FullAccess"
+```
+
+The deploy script uses `--role` when passed, otherwise defaults to `$GLUE_JOB_ROLE`.
 
 ## Deploy
 
@@ -70,12 +73,12 @@ python 03-get_network_inputs/deploy_glue_network_inputs_job.py \
   --script-s3-prefix s3://aws-glue-assets-702228044494-ap-northeast-1/scripts/03-get-network-inputs/
 ```
 
-If role auto-lookup is unavailable:
+Or pass role explicitly:
 
 ```bash
 python 03-get_network_inputs/deploy_glue_network_inputs_job.py \
   --job-name openalex_get_network_inputs \
-  --role arn:aws:iam::<account-id>:role/<glue-role> \
+  --role arn:aws:iam::702228044494:role/AWSGlueServiceRole_S3FullAccess \
   --script-s3-prefix s3://aws-glue-assets-702228044494-ap-northeast-1/scripts/03-get-network-inputs/
 ```
 
