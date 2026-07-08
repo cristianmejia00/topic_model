@@ -8,8 +8,8 @@ Tables created in order:
 4) cluster_report_macro
 
 Usage:
-    .venv/bin/python create_athena_reports.py --database q20260629
-    .venv/bin/python create_athena_reports.py --database q20260629 --overwrite
+    .venv/bin/python create_athena_reports.py --database q20260629 --snapshot 2026-06-26 --query q20260629
+    .venv/bin/python create_athena_reports.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --overwrite
 
 Notes:
 - Without --overwrite, CTAS will fail if target table/location already exists.
@@ -20,11 +20,14 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from dataclasses import dataclass
 
 import awswrangler as wr
 import boto3
+
+from root_common_config import QUERY_ENV_VAR, RootPaths, SNAPSHOT_ENV_VAR
 
 
 DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
@@ -38,8 +41,8 @@ class TableSpec:
     sql: str
 
 
-def build_table_specs(database: str) -> list[TableSpec]:
-    base = f"s3://openalex-outputs/classification/{database}/"
+def build_table_specs(database: str, snapshot: str, query: str) -> list[TableSpec]:
+    base = RootPaths(database=database, snapshot=snapshot, query=query).clustering_root
 
     article_sql = f"""
 CREATE TABLE article_report
@@ -245,6 +248,22 @@ def run_athena_query(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create article/cluster Athena report tables.")
     parser.add_argument("--database", required=True, help="Glue/Athena database name.")
+    parser.add_argument(
+        "--snapshot",
+        default=os.getenv(SNAPSHOT_ENV_VAR, "").strip() or None,
+        help=(
+            "Snapshot token for S3 outputs, e.g. 2026-06-26. "
+            f"Defaults to ${SNAPSHOT_ENV_VAR} if set."
+        ),
+    )
+    parser.add_argument(
+        "--query",
+        default=os.getenv(QUERY_ENV_VAR, "").strip() or None,
+        help=(
+            "Query token for S3 outputs, e.g. q20260629. "
+            f"Defaults to ${QUERY_ENV_VAR} if set."
+        ),
+    )
     parser.add_argument("--staging", default=DEFAULT_STAGING, help="Athena query result S3 path.")
     parser.add_argument("--workgroup", default=DEFAULT_WORKGROUP, help="Athena workgroup.")
     parser.add_argument(
@@ -257,10 +276,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    specs = build_table_specs(args.database)
+    if not args.snapshot:
+        raise RuntimeError(f"Missing --snapshot (or env {SNAPSHOT_ENV_VAR}).")
+    if not args.query:
+        raise RuntimeError(f"Missing --query (or env {QUERY_ENV_VAR}).")
+
+    specs = build_table_specs(args.database, args.snapshot, args.query)
     athena = boto3.client("athena")
 
     print(f"[config] database={args.database} workgroup={args.workgroup}")
+    print(f"[config] snapshot={args.snapshot} query={args.query}")
     print(f"[config] staging={args.staging}")
 
     if args.overwrite:

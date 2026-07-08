@@ -4,21 +4,23 @@ Create/refresh Glue Catalog database and discover tables with a crawler.
 This script:
 1) Creates a Glue database named exactly as --database (if missing).
 2) Creates or updates one Glue crawler targeting both required S3 roots:
-   - s3://openalex-outputs/athena/{database}/
-   - s3://openalex-outputs/cwts/{database}/network_assets/{version}/
+    - s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/
+    - s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/
 3) Runs the crawler and waits for completion (unless --no-wait).
 4) Optional hard reset mode can delete crawler + all tables + database first.
 
 Usage:
     .venv/bin/python create_glue_catalog.py \
         --database q20260629 \
-        --version version3 \
+        --snapshot 2026-06-26 \
+        --query q20260629 \
         --crawler-role AWSGlueServiceRole-openalex
 
     # Destructive reset (recreate database and recrawl from scratch)
     .venv/bin/python create_glue_catalog.py \
         --database q20260629 \
-        --version version3 \
+        --snapshot 2026-06-26 \
+        --query q20260629 \
         --crawler-role AWSGlueServiceRole-openalex \
         --hard-reset
 
@@ -37,6 +39,8 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
+from root_common_config import RootPaths
+
 
 DEFAULT_CRAWLER_ROLE_ENV = "GLUE_CRAWLER_ROLE"
 
@@ -51,9 +55,14 @@ def parse_args() -> argparse.Namespace:
         help="Glue database name to create/use, e.g. q20260629.",
     )
     parser.add_argument(
-        "--version",
+        "--snapshot",
         required=True,
-        help="Network-assets version folder, e.g. version3.",
+        help="Snapshot token used in S3 paths, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        required=True,
+        help="Query token used in S3 paths, e.g. q20260629.",
     )
     parser.add_argument(
         "--crawler-role",
@@ -260,18 +269,16 @@ def main() -> None:
             "Missing crawler role. Provide --crawler-role or set GLUE_CRAWLER_ROLE."
         )
 
-    athena_root = f"s3://openalex-outputs/athena/{args.database}/"
-    network_assets_root = (
-        f"s3://openalex-outputs/cwts/{args.database}/network_assets/{args.version}/"
-    )
-    s3_paths = [athena_root, network_assets_root]
+    paths = RootPaths(database=args.database, snapshot=args.snapshot, query=args.query)
+    s3_paths = [paths.results_root, paths.network_root]
 
     crawler_name = args.crawler_name or sanitize_name(
-        f"{args.database}_{args.version}_bootstrap"
+        f"{args.database}_{args.snapshot}_{args.query}_bootstrap"
     )
 
     print(f"[config] database={args.database}")
-    print(f"[config] version={args.version}")
+    print(f"[config] snapshot={args.snapshot}")
+    print(f"[config] query={args.query}")
     print(f"[config] crawler_name={crawler_name}")
     print(f"[config] crawler_role={args.crawler_role}")
     print(f"[config] hard_reset={args.hard_reset}")

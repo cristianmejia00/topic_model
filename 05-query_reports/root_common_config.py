@@ -10,15 +10,32 @@ import awswrangler as wr
 
 
 DB_ENV_VAR = "TOPIC_MODEL_DATABASE"
+SNAPSHOT_ENV_VAR = "TOPIC_MODEL_SNAPSHOT"
+QUERY_ENV_VAR = "TOPIC_MODEL_QUERY"
 
 
 @dataclass(frozen=True)
 class RootPaths:
     database: str
+    snapshot: str
+    query: str
+
+    @property
+    def results_root(self) -> str:
+        return f"s3://openalex-results/snapshot_{self.snapshot}/queries/{self.query}/"
+
+    @property
+    def network_root(self) -> str:
+        return f"{self.results_root}network/"
+
+    @property
+    def clustering_root(self) -> str:
+        return f"{self.network_root}clustering/"
 
     @property
     def classification_root(self) -> str:
-        return f"s3://openalex-outputs/classification/{self.database}/"
+        # Backward-compatible alias used by existing step-05 scripts.
+        return self.clustering_root
 
     @property
     def bertopic_root(self) -> str:
@@ -64,8 +81,32 @@ def resolve_database_from_env() -> str:
     return value
 
 
+def resolve_snapshot_from_env() -> str:
+    value = os.getenv(SNAPSHOT_ENV_VAR, "").strip()
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable {SNAPSHOT_ENV_VAR}. "
+            "Run scripts through run_root_pipeline.py with --snapshot."
+        )
+    return value
+
+
+def resolve_query_from_env() -> str:
+    value = os.getenv(QUERY_ENV_VAR, "").strip()
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable {QUERY_ENV_VAR}. "
+            "Run scripts through run_root_pipeline.py with --query."
+        )
+    return value
+
+
 def get_root_paths() -> RootPaths:
-    return RootPaths(database=resolve_database_from_env())
+    return RootPaths(
+        database=resolve_database_from_env(),
+        snapshot=resolve_snapshot_from_env(),
+        query=resolve_query_from_env(),
+    )
 
 
 def s3_prefix_has_objects(prefix: str) -> bool:

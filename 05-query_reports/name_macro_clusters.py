@@ -9,7 +9,7 @@ Inputs (S3):
   - cluster_report_meso/ + bertopic/meso/ (optional context)
 
 Output (S3):
-  s3://openalex-outputs/classification/q20260629/cluster_name_macro/
+    s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/clustering/cluster_name_macro/
   with two columns: macro_cluster, name
 
 Also prints the computed names in the terminal.
@@ -30,7 +30,6 @@ from root_common_config import get_root_paths
 # CONFIG
 # ---------------------------------------------------------------------------
 ROOT_PATHS = get_root_paths()
-BASE = ROOT_PATHS.classification_root
 KEYWORDS_DIR = ROOT_PATHS.bertopic_root
 KEY_FILE = ".key"
 

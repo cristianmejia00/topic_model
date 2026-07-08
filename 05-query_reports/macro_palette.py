@@ -8,9 +8,17 @@ import colorsys
 
 import awswrangler as wr
 
+from root_common_config import get_root_paths
 
-BASE = "s3://openalex-outputs/classification/q20260629/"
-MACRO_COLOR_PATH = f"{BASE}cluster_color_macro/"
+
+def _default_macro_color_path() -> str:
+    try:
+        return get_root_paths().cluster_color_macro
+    except Exception:
+        return ""
+
+
+MACRO_COLOR_PATH = _default_macro_color_path()
 
 
 def stable_color_hex(macro_id: int) -> str:
@@ -22,6 +30,9 @@ def stable_color_hex(macro_id: int) -> str:
 
 def load_macro_color_map(path: str = MACRO_COLOR_PATH) -> dict[int, str]:
     """Return {macro_cluster: color_hex}. Empty dict on read/schema issues."""
+    if not path:
+        print("[warn] macro color path is not configured; using deterministic fallback")
+        return {}
     try:
         p = wr.s3.read_parquet(path)
         if {"macro_cluster", "color_hex"}.issubset(p.columns):

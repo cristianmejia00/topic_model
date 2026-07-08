@@ -3,13 +3,14 @@ Single entrypoint for root-level pipeline scripts.
 
 Design:
 - Database is required (no default).
-- All root scripts receive the database via TOPIC_MODEL_DATABASE.
+- Snapshot and query are required for S3 layout resolution.
+- All root scripts receive context via TOPIC_MODEL_DATABASE/TOPIC_MODEL_SNAPSHOT/TOPIC_MODEL_QUERY.
 - Existing outputs are blocked unless --force is provided.
 
 Examples:
-  .venv/bin/python run_root_pipeline.py --database q20260629 --step bertopic
-  .venv/bin/python run_root_pipeline.py --database q20260629 --step macro_colors --step macro_names
-  .venv/bin/python run_root_pipeline.py --database q20260629 --step athena_reports --force
+    .venv/bin/python run_root_pipeline.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --step bertopic
+    .venv/bin/python run_root_pipeline.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --step macro_colors --step macro_names
+    .venv/bin/python run_root_pipeline.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --step athena_reports --force
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ from pathlib import Path
 
 from root_common_config import (
     DB_ENV_VAR,
+    QUERY_ENV_VAR,
     RootPaths,
+    SNAPSHOT_ENV_VAR,
     ensure_outputs_writable,
 )
 
@@ -47,7 +50,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--database",
         required=True,
-        help="Classification database id, e.g. q20260629 (required).",
+        help="Glue/Athena database id, e.g. q20260629 (required).",
+    )
+    parser.add_argument(
+        "--snapshot",
+        required=True,
+        help="Snapshot token used in S3 paths, e.g. 2026-06-26 (required).",
+    )
+    parser.add_argument(
+        "--query",
+        required=True,
+        help="Query token used in S3 paths, e.g. q20260629 (required).",
     )
     parser.add_argument(
         "--version",
@@ -96,9 +109,9 @@ def step_outputs(step: str, paths: RootPaths, repo_root: Path) -> tuple[list[str
     elif step == "athena_reports":
         s3.extend([
             paths.article_report,
-            f"{paths.classification_root}cluster_report_micro/",
-            f"{paths.classification_root}cluster_report_meso/",
-            f"{paths.classification_root}cluster_report_macro/",
+            paths.micro_report,
+            paths.meso_report,
+            paths.macro_report,
         ])
 
     elif step == "bertopic":
@@ -167,6 +180,10 @@ def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[s
             str(repo_root / "migrate_meso_as_micro.py"),
             "--database",
             args.database,
+            "--snapshot",
+            args.snapshot,
+            "--query",
+            args.query,
             "--version",
             str(args.version),
             "--staging",
@@ -184,6 +201,10 @@ def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[s
             str(repo_root / "create_athena_reports.py"),
             "--database",
             args.database,
+            "--snapshot",
+            args.snapshot,
+            "--query",
+            args.query,
             "--staging",
             args.staging,
             "--workgroup",
@@ -219,15 +240,19 @@ def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[s
 def main() -> None:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent
-    paths = RootPaths(database=args.database)
+    paths = RootPaths(database=args.database, snapshot=args.snapshot, query=args.query)
 
     if "meso_as_micro" in args.step and not str(args.version or "").strip():
         raise RuntimeError("--version is required when running --step meso_as_micro")
 
     env = os.environ.copy()
     env[DB_ENV_VAR] = args.database
+    env[SNAPSHOT_ENV_VAR] = args.snapshot
+    env[QUERY_ENV_VAR] = args.query
 
     print(f"[entrypoint] database={args.database}")
+    print(f"[entrypoint] snapshot={args.snapshot}")
+    print(f"[entrypoint] query={args.query}")
     print(f"[entrypoint] force={args.force}")
 
     for step in args.step:

@@ -19,11 +19,15 @@ For a selected Glue/Athena database + version, this script:
 Usage:
     .venv/bin/python migrate_meso_as_micro.py \
         --database quantum \
+        --snapshot 2026-06-26 \
+        --query quantum \
         --version version3
 
 Dry-run example:
     .venv/bin/python migrate_meso_as_micro.py \
         --database quantum \
+        --snapshot 2026-06-26 \
+        --query quantum \
         --version version3 \
         --dry-run
 """
@@ -40,6 +44,8 @@ from typing import Any
 import awswrangler as wr
 import boto3
 
+from root_common_config import RootPaths
+
 
 DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
 DEFAULT_WORKGROUP = "primary"
@@ -52,6 +58,16 @@ def parse_args() -> argparse.Namespace:
         description="Promote meso assignments to effective micro assignments in source table."
     )
     parser.add_argument("--database", required=True, help="Glue/Athena database name, e.g. quantum.")
+    parser.add_argument(
+        "--snapshot",
+        required=True,
+        help="Snapshot token used in S3 paths, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        required=True,
+        help="Query token used in S3 paths, e.g. q20260629.",
+    )
     parser.add_argument("--version", required=True, help="Version tag, e.g. version3.")
     parser.add_argument(
         "--source-table",
@@ -227,10 +243,8 @@ def main() -> None:
     migrated_temp_table = safe_table_name(f"{source_table}__migrated__{version_token}__{run_id}")
     archive_table = safe_table_name(f"{source_table}__archive__{version_token}__{run_id}")
 
-    migration_root = (
-        f"s3://openalex-outputs/classification/{database}/"
-        f"migrations/meso_as_micro/{version_token}/{run_id}/"
-    )
+    paths = RootPaths(database=database, snapshot=args.snapshot, query=args.query)
+    migration_root = f"{paths.clustering_root}migrations/meso_as_micro/{version_token}/{run_id}/"
     migrated_location = f"{migration_root}migrated_table/"
     archive_location = f"{migration_root}archive_snapshot/"
     canonical_location = f"{migration_root}canonical_replacement/"
@@ -238,6 +252,8 @@ def main() -> None:
     manifest_path = f"{migration_root}manifest.json"
 
     print(f"[config] database={database}")
+    print(f"[config] snapshot={args.snapshot}")
+    print(f"[config] query={args.query}")
     print(f"[config] version={args.version}")
     print(f"[config] source_table={source_table}")
     print(f"[config] migrated_temp_table={migrated_temp_table}")

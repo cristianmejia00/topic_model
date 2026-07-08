@@ -4,7 +4,7 @@ create_macro_color_palette.py
 Create a stable macro-cluster color palette and save it to S3.
 
 Output:
-  s3://openalex-outputs/classification/q20260629/cluster_color_macro/
+    s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/clustering/cluster_color_macro/
   columns: macro_cluster, color_hex
 """
 
