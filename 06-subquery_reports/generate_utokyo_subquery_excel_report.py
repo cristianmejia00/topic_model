@@ -5,13 +5,13 @@ This script builds one workbook with two sheets:
 2) article_report_utokyo_top10
 
 Output path:
-  utokyo/{database}/{query_folder}/utokyo_cluster_and_articles.xlsx
+    utokyo/{database}/{subquery}/utokyo_cluster_and_articles.xlsx
 
 Data sources:
 - Subquery micro summary from
-  s3://openalex-outputs/classification/{database}/subqueries/{query_folder}/cluster_report_micro/
+    s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/clustering/subqueries/{SUBQUERY}/cluster_report_micro/
 - Optional names from
-  s3://openalex-outputs/classification/{database}/subqueries/{query_folder}/cluster_names/
+    s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/clustering/subqueries/{SUBQUERY}/cluster_names/
 - Canonical article table (Athena): article_report
 """
 
@@ -27,14 +27,11 @@ import awswrangler as wr
 import pandas as pd
 
 from common_config import (
-    DEFAULT_QUERY_FOLDER_TOPIC,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
+    DEFAULT_STAGING,
+    DEFAULT_WORKGROUP,
+    resolve_paths,
 )
 
-
-DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
 UTOKYO_INSTITUTION = "The University of Tokyo"
 WORKBOOK_NAME = "utokyo_cluster_and_articles.xlsx"
 ILLEGAL_XLSX_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
@@ -45,19 +42,34 @@ def parse_args() -> argparse.Namespace:
         description="Generate a UTokyo-focused two-sheet Excel workbook for one subquery."
     )
     parser.add_argument(
-        "--database",
+        "--snapshot",
         default=None,
-        help="Classification database id, e.g. q20260629.",
+        help="Snapshot token, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Query token, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--subquery",
+        default=None,
+        help="Subquery folder name under clustering/subqueries/.",
     )
     parser.add_argument(
         "--query-folder",
         default=None,
-        help="Subquery folder name under subqueries/.",
+        help="Deprecated alias for --subquery.",
     )
     parser.add_argument(
         "--staging",
         default=DEFAULT_STAGING,
         help="Athena query output S3 path.",
+    )
+    parser.add_argument(
+        "--workgroup",
+        default=DEFAULT_WORKGROUP,
+        help="Athena workgroup.",
     )
     return parser.parse_args()
 
@@ -96,11 +108,12 @@ def sanitize_excel_text(value: Any) -> Any:
     return value
 
 
-def run_sql(sql: str, *, database: str, staging: str) -> pd.DataFrame:
+def run_sql(sql: str, *, database: str, staging: str, workgroup: str) -> pd.DataFrame:
     return wr.athena.read_sql_query(
         sql,
         database=database,
         s3_output=staging,
+        workgroup=workgroup,
         ctas_approach=False,
     )
 
@@ -185,7 +198,7 @@ def build_micro_base(micro_rep: pd.DataFrame, names: pd.DataFrame) -> tuple[pd.D
     return out, micro_ids
 
 
-def build_utokyo_micro_agg(*, database: str, staging: str, micro_ids: list[int]) -> pd.DataFrame:
+def build_utokyo_micro_agg(*, database: str, staging: str, workgroup: str, micro_ids: list[int]) -> pd.DataFrame:
     sql = f"""
     WITH utokyo_papers AS (
         SELECT DISTINCT
@@ -206,7 +219,7 @@ def build_utokyo_micro_agg(*, database: str, staging: str, micro_ids: list[int])
     FROM utokyo_papers
     GROUP BY micro_cluster
     """
-    out = run_sql(sql, database=database, staging=staging)
+    out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
     if out.empty:
         return pd.DataFrame(
             columns=[
@@ -226,7 +239,7 @@ def build_utokyo_micro_agg(*, database: str, staging: str, micro_ids: list[int])
     return out
 
 
-def build_utokyo_article_top10(*, database: str, staging: str, micro_ids: list[int]) -> pd.DataFrame:
+def build_utokyo_article_top10(*, database: str, staging: str, workgroup: str, micro_ids: list[int]) -> pd.DataFrame:
     sql = f"""
     WITH utokyo_papers AS (
         SELECT DISTINCT
@@ -265,7 +278,7 @@ def build_utokyo_article_top10(*, database: str, staging: str, micro_ids: list[i
     ) ranked
     WHERE rn <= 10
     """
-    out = run_sql(sql, database=database, staging=staging)
+    out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
     if out.empty:
         return out
     for col in ["publication_year", "citations", "micro_cluster", "meso_cluster", "macro_cluster"]:
@@ -372,20 +385,30 @@ def write_excel(path: Path, sheets: dict[str, pd.DataFrame]) -> None:
 
 def main() -> None:
     args = parse_args()
-    database = resolve_database(args.database)
-    query_folder = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
+    paths = resolve_paths(
+        snapshot=args.snapshot,
+        query=args.query,
+        subquery=args.subquery,
+        query_folder=args.query_folder,
+    )
+    database = paths.database
+    query_folder = paths.subquery
 
-    subquery_base = f"{subqueries_root(database)}{query_folder}/"
+    subquery_base = paths.subquery_base
     root_dir = Path(__file__).resolve().parent.parent
     output_dir = root_dir / "utokyo" / database / query_folder
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / WORKBOOK_NAME
 
     print("[config] database:", database)
+    print("[config] snapshot:", paths.snapshot)
+    print("[config] query:", paths.query)
     print("[config] query_folder:", query_folder)
     print("[config] source:", subquery_base)
     print("[config] output:", out_path)
     print("[config] institution:", UTOKYO_INSTITUTION)
+    print("[config] staging:", args.staging)
+    print("[config] workgroup:", args.workgroup)
 
     micro_rep = read_subset(subquery_base, "cluster_report_micro", required=True)
     names = read_subset(subquery_base, "cluster_names", required=False)
@@ -394,12 +417,18 @@ def main() -> None:
     if not micro_ids:
         raise RuntimeError("No micro clusters found in subquery cluster_report_micro.")
 
-    utokyo_agg = build_utokyo_micro_agg(database=database, staging=args.staging, micro_ids=micro_ids)
+    utokyo_agg = build_utokyo_micro_agg(
+        database=database,
+        staging=args.staging,
+        workgroup=args.workgroup,
+        micro_ids=micro_ids,
+    )
     summary_df = build_cluster_summary(micro_base, utokyo_agg)
 
     utokyo_articles = build_utokyo_article_top10(
         database=database,
         staging=args.staging,
+        workgroup=args.workgroup,
         micro_ids=micro_ids,
     )
     article_df = build_article_sheet(summary_df, utokyo_articles)

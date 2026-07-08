@@ -1,17 +1,17 @@
 """
 explore_subquery.py
 ===================
-Quickly browse the S3 outputs of a subquery search run for one QUERY_FOLDER.
+Quickly browse the S3 outputs of a subquery search run for one SUBQUERY.
 
 Two ways to use it:
 
   Terminal (interactive):
-      python subqueries/explore_subquery.py
+      python 06-subquery_reports/explore_subquery.py --snapshot 2026-06-26 --query q20260629 --subquery quantum_computing
       # prints a summary, then prompts for a micro id (or 'meso N' / 'macro N')
 
   Notebook / import:
       from subqueries.explore_subquery import Explorer
-      e = Explorer("quantum_computing")
+      e = Explorer(subquery="quantum_computing", snapshot="2026-06-26", query="q20260629")
       e.summary()            # ranked table of matched micro clusters
       e.micro(12345)         # full profile: stats, keywords, top titles, countries, insts
       e.meso(678)            # meso context + its matched micros
@@ -28,11 +28,7 @@ import sys
 import pandas as pd
 
 from common_config import (
-    DEFAULT_QUERY_FOLDER_TOPIC,
-    keywords_dir,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
+    resolve_paths,
 )
 
 pd.set_option("display.max_colwidth", 80)
@@ -41,12 +37,6 @@ pd.set_option("display.width", 160)
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-DATABASE = "q20260629"
-QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
-
-SUBQUERIES_ROOT = subqueries_root(DATABASE)
-KEYWORDS_DIR = keywords_dir(DATABASE)   # for keywords
-
 KW_TERMS = 6        # keyword terms shown in the summary table
 
 
@@ -55,11 +45,14 @@ def _short(kw, n=KW_TERMS):
 
 
 class Explorer:
-    def __init__(self, query_folder=QUERY_FOLDER, database=DATABASE, autoload=True):
-        self.database = database
-        self.folder = query_folder
-        self.base = f"{subqueries_root(database)}{query_folder}/"
-        self.keywords_dir = keywords_dir(database)
+    def __init__(self, *, subquery: str, snapshot: str, query: str, autoload=True):
+        paths = resolve_paths(snapshot=snapshot, query=query, subquery=subquery)
+        self.database = paths.database
+        self.snapshot = paths.snapshot
+        self.query = paths.query
+        self.folder = paths.subquery
+        self.base = paths.subquery_base
+        self.keywords_dir = paths.bertopic_root
         if autoload:
             self._load()
 
@@ -201,16 +194,24 @@ class Explorer:
 
 def main():
     parser = argparse.ArgumentParser(description="Explore a generated subquery output in terminal mode.")
-    parser.add_argument("--database", default=None, help="Classification database id, e.g. q20260629.")
-    parser.add_argument("--query-folder", default=None, help="Subquery folder name under subqueries/.")
+    parser.add_argument("--snapshot", default=None, help="Snapshot token, e.g. 2026-06-26.")
+    parser.add_argument("--query", default=None, help="Query token, e.g. q20260629.")
+    parser.add_argument("--subquery", default=None, help="Subquery folder name under clustering/subqueries/.")
+    parser.add_argument("--query-folder", default=None, help="Deprecated alias for --subquery.")
     args = parser.parse_args()
 
-    database = resolve_database(args.database)
-    query_folder = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
-    print("[config] database:", database)
-    print("[config] query_folder:", query_folder)
+    paths = resolve_paths(
+        snapshot=args.snapshot,
+        query=args.query,
+        subquery=args.subquery,
+        query_folder=args.query_folder,
+    )
+    print("[config] snapshot:", paths.snapshot)
+    print("[config] query:", paths.query)
+    print("[config] database:", paths.database)
+    print("[config] query_folder:", paths.subquery)
 
-    e = Explorer(query_folder=query_folder, database=database)
+    e = Explorer(subquery=paths.subquery, snapshot=paths.snapshot, query=paths.query)
     e.summary()
     print("\nEnter a micro id to drill in — or 'meso N' / 'macro N' / 'q' to quit.")
     while True:

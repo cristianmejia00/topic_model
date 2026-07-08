@@ -5,8 +5,8 @@ Build a static HTML report for one subquery and publish it both locally (for Git
 and to S3 under the query's report/ prefix.
 
 Outputs:
-  docs/{DATABASE}/{QUERY_FOLDER}/report/index.html
-  s3://.../subqueries/{QUERY_FOLDER}/report/index.html
+  docs/{DATABASE}/{SUBQUERY}/report/index.html
+  s3://.../subqueries/{SUBQUERY}/report/index.html
 
 Requirements addressed:
   - Clusters sorted by publication count (descending)
@@ -37,12 +37,7 @@ if str(ROOT) not in sys.path:
   sys.path.insert(0, str(ROOT))
 
 from common_config import (
-    DEFAULT_QUERY_FOLDER_TOPIC,
-    keywords_dir,
-    macro_name_path,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
+  resolve_paths,
 )
 from macro_palette import color_for_macro, load_macro_color_map
 
@@ -50,12 +45,12 @@ from macro_palette import color_for_macro, load_macro_color_map
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-DATABASE = "q20260629"
-QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
+DATABASE = ""
+SUBQUERY = ""
 
-SUBQUERIES_ROOT = subqueries_root(DATABASE)
-KEYWORDS_DIR = keywords_dir(DATABASE)
-MACRO_NAME_PATH = macro_name_path(DATABASE)
+SUBQUERIES_ROOT = ""
+KEYWORDS_DIR = ""
+MACRO_NAME_PATH = ""
 LOCAL_DOCS_ROOT = ROOT / "docs" 
 
 TOP_TITLES = 10
@@ -69,14 +64,24 @@ def parse_args() -> argparse.Namespace:
     description="Generate a static HTML report for one subquery folder."
   )
   parser.add_argument(
-    "--database",
+    "--snapshot",
     default=None,
-    help="Classification database id, e.g. q20260629.",
+    help="Snapshot token, e.g. 2026-06-26.",
+  )
+  parser.add_argument(
+    "--query",
+    default=None,
+    help="Query token, e.g. q20260629.",
+  )
+  parser.add_argument(
+    "--subquery",
+    default=None,
+    help="Subquery folder name to read/write under clustering/subqueries/.",
   )
   parser.add_argument(
     "--query-folder",
     default=None,
-    help="Subquery folder name to read/write under subqueries/.",
+    help="Deprecated alias for --subquery.",
   )
   return parser.parse_args()
 
@@ -696,22 +701,30 @@ def upload_report_folder(local_dir: Path, s3_prefix: str) -> list[str]:
 
 
 def main() -> None:
-  global DATABASE, QUERY_FOLDER, SUBQUERIES_ROOT, KEYWORDS_DIR, MACRO_NAME_PATH
+  global DATABASE, SUBQUERY, SUBQUERIES_ROOT, KEYWORDS_DIR, MACRO_NAME_PATH
 
   args = parse_args()
-  DATABASE = resolve_database(args.database)
-  QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
-  SUBQUERIES_ROOT = subqueries_root(DATABASE)
-  KEYWORDS_DIR = keywords_dir(DATABASE)
-  MACRO_NAME_PATH = macro_name_path(DATABASE)
+  paths = resolve_paths(
+    snapshot=args.snapshot,
+    query=args.query,
+    subquery=args.subquery,
+    query_folder=args.query_folder,
+  )
+  DATABASE = paths.database
+  SUBQUERY = paths.subquery
+  SUBQUERIES_ROOT = paths.subqueries_root
+  KEYWORDS_DIR = paths.bertopic_root
+  MACRO_NAME_PATH = paths.macro_name_path
 
   print("[config] database:", DATABASE)
-  print("[config] query_folder:", QUERY_FOLDER)
+  print("[config] snapshot:", paths.snapshot)
+  print("[config] query:", paths.query)
+  print("[config] subquery:", SUBQUERY)
   print("[config] use_macro_cluster:", USE_MACRO_CLUSTER)
 
-  out_base = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
+  out_base = paths.subquery_base
 
-  print(f"[load] reading subquery datasets for '{QUERY_FOLDER}'")
+  print(f"[load] reading subquery datasets for '{SUBQUERY}'")
   micro_rep = read_subset(out_base, "cluster_report_micro", required=True)
   papers = read_subset(out_base, "article_top10", required=True)
   countries = read_subset(out_base, "top_countries", required=True)
@@ -898,7 +911,7 @@ def main() -> None:
   report_payload = {
     "title": TITLE,
     "subtitle": SUBTITLE,
-    "query_folder": QUERY_FOLDER,
+    "query_folder": SUBQUERY,
     "clusters": clusters,
     "plot_by_macro": plot_by_macro,
     "total_publications": total_publications,
@@ -908,12 +921,12 @@ def main() -> None:
     "scatter_scale": 1.1,
   }
 
-  out_dir = LOCAL_DOCS_ROOT / DATABASE / QUERY_FOLDER / "report"
+  out_dir = LOCAL_DOCS_ROOT / DATABASE / SUBQUERY / "report"
   out_dir.mkdir(parents=True, exist_ok=True)
   html_path = out_dir / "index.html"
   html_path.write_text(build_html(json.dumps(report_payload, ensure_ascii=True)), encoding="utf-8")
 
-  s3_report_prefix = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/report/"
+  s3_report_prefix = f"{SUBQUERIES_ROOT}{SUBQUERY}/report/"
   uploaded = upload_report_folder(out_dir, s3_report_prefix)
 
   print(f"[done] clusters: {len(clusters):,}")

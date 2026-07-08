@@ -15,7 +15,7 @@ Filter syntax:
 You can pass one or multiple --filter arguments. Multiple filters are combined
 with AND.
 
-Outputs (under subqueries/{QUERY_FOLDER}/):
+Outputs (under subqueries/{SUBQUERY}/):
     matches/                 matched micro clusters summary
     article_top10/           top-10 cited papers per matched micro cluster
     cluster_report_micro/    micro report rows for the matched clusters
@@ -37,25 +37,23 @@ from dataclasses import dataclass
 import pandas as pd
 
 from common_config import (
-    DEFAULT_QUERY_FOLDER_FILTERS,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
+    DEFAULT_STAGING,
+    DEFAULT_WORKGROUP,
+    resolve_paths,
 )
 
 # ----------------------------------------------------------------------------
 # DEFAULT PARAMETERS
 # ----------------------------------------------------------------------------
-DEFAULT_QUERY_FOLDER = DEFAULT_QUERY_FOLDER_FILTERS
 DEFAULT_FILTERS = ["ave_py>=2022", "recency_py>=0.4"]
 MIN_SIZE_DEFAULT = 50
 
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-DATABASE = "q20260629"
-S3_STAGING = "s3://openalex-outputs/athena-staging/"
-OUT_ROOT = subqueries_root(DATABASE)
+DATABASE = ""
+S3_STAGING = DEFAULT_STAGING
+ATHENA_WORKGROUP = DEFAULT_WORKGROUP
 
 TOP_PAPERS = 10
 TOP_ENTITIES = 20
@@ -87,14 +85,34 @@ def parse_args() -> argparse.Namespace:
         description="Create subquery outputs by filtering micro cluster numeric metrics."
     )
     parser.add_argument(
-        "--database",
+        "--snapshot",
         default=None,
-        help="Classification database id, e.g. q20260629.",
+        help="Snapshot token, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Query token, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--subquery",
+        default=None,
+        help="Subquery folder name under clustering/subqueries/.",
     )
     parser.add_argument(
         "--query-folder",
         default=None,
-        help="S3 subfolder name under subqueries/ for this run.",
+        help="Deprecated alias for --subquery.",
+    )
+    parser.add_argument(
+        "--staging",
+        default=DEFAULT_STAGING,
+        help="Athena query output S3 path.",
+    )
+    parser.add_argument(
+        "--workgroup",
+        default=DEFAULT_WORKGROUP,
+        help="Athena workgroup.",
     )
     parser.add_argument(
         "--filter",
@@ -140,6 +158,7 @@ def run_sql(sql: str) -> pd.DataFrame:
         sql,
         database=DATABASE,
         s3_output=S3_STAGING,
+        workgroup=ATHENA_WORKGROUP,
         ctas_approach=False,
     )
 
@@ -177,14 +196,21 @@ def apply_filters(micro_rep: pd.DataFrame, rules: list[FilterRule]) -> pd.DataFr
 
 
 def main():
-    global DATABASE, OUT_ROOT
+    global DATABASE, S3_STAGING, ATHENA_WORKGROUP
 
     args = parse_args()
-    DATABASE = resolve_database(args.database)
-    query_folder = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER)
-    OUT_ROOT = subqueries_root(DATABASE)
+    paths = resolve_paths(
+        snapshot=args.snapshot,
+        query=args.query,
+        subquery=args.subquery,
+        query_folder=args.query_folder,
+    )
+    DATABASE = paths.database
+    query_folder = paths.subquery
+    S3_STAGING = args.staging
+    ATHENA_WORKGROUP = args.workgroup
     filter_exprs = args.filters if args.filters else DEFAULT_FILTERS
-    out_base = f"{OUT_ROOT}{query_folder}/"
+    out_base = paths.subquery_base
 
     try:
         rules = [parse_filter_rule(expr) for expr in filter_exprs]
@@ -193,7 +219,11 @@ def main():
         sys.exit(2)
 
     print("[config] database:", DATABASE)
+    print("[config] snapshot:", paths.snapshot)
+    print("[config] query:", paths.query)
     print("[config] query_folder:", query_folder)
+    print("[config] staging:", S3_STAGING)
+    print("[config] workgroup:", ATHENA_WORKGROUP)
     print("[config] filters (AND):")
     for expr in filter_exprs:
         print("   -", expr)

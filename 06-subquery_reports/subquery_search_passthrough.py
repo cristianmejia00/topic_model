@@ -24,20 +24,18 @@ import sys
 import pandas as pd
 
 from common_config import (
-    DEFAULT_QUERY_FOLDER_PASSTHROUGH,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
+    DEFAULT_STAGING,
+    DEFAULT_WORKGROUP,
+    resolve_paths,
 )
 
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-DATABASE = "q20260629"
-S3_STAGING = "s3://openalex-outputs/athena-staging/"
-OUT_ROOT = subqueries_root(DATABASE)
-QUERY_FOLDER = DEFAULT_QUERY_FOLDER_PASSTHROUGH
-OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
+DATABASE = ""
+S3_STAGING = DEFAULT_STAGING
+ATHENA_WORKGROUP = DEFAULT_WORKGROUP
+OUT_BASE = ""
 
 TOP_PAPERS = 10
 TOP_ENTITIES = 20
@@ -48,14 +46,34 @@ def parse_args() -> argparse.Namespace:
         description="Create subquery outputs for all micro clusters (no filters)."
     )
     parser.add_argument(
-        "--database",
+        "--snapshot",
         default=None,
-        help="Classification database id, e.g. q20260629.",
+        help="Snapshot token, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Query token, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--subquery",
+        default=None,
+        help="Subquery folder name under clustering/subqueries/.",
     )
     parser.add_argument(
         "--query-folder",
         default=None,
-        help="S3 subfolder name under subqueries/ for this run.",
+        help="Deprecated alias for --subquery.",
+    )
+    parser.add_argument(
+        "--staging",
+        default=DEFAULT_STAGING,
+        help="Athena query output S3 path.",
+    )
+    parser.add_argument(
+        "--workgroup",
+        default=DEFAULT_WORKGROUP,
+        help="Athena workgroup.",
     )
     return parser.parse_args()
 
@@ -71,6 +89,7 @@ def run_sql(sql: str) -> pd.DataFrame:
         sql,
         database=DATABASE,
         s3_output=S3_STAGING,
+        workgroup=ATHENA_WORKGROUP,
         ctas_approach=False,
     )
 
@@ -83,16 +102,26 @@ def write(df: pd.DataFrame, name: str):
 
 
 def main():
-    global DATABASE, QUERY_FOLDER, OUT_ROOT, OUT_BASE
+    global DATABASE, OUT_BASE, S3_STAGING, ATHENA_WORKGROUP
 
     args = parse_args()
-    DATABASE = resolve_database(args.database)
-    QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_PASSTHROUGH)
-    OUT_ROOT = subqueries_root(DATABASE)
-    OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
+    paths = resolve_paths(
+        snapshot=args.snapshot,
+        query=args.query,
+        subquery=args.subquery,
+        query_folder=args.query_folder,
+    )
+    DATABASE = paths.database
+    OUT_BASE = paths.subquery_base
+    S3_STAGING = args.staging
+    ATHENA_WORKGROUP = args.workgroup
 
     print("[config] database:", DATABASE)
-    print("[config] query_folder:", QUERY_FOLDER)
+    print("[config] snapshot:", paths.snapshot)
+    print("[config] query:", paths.query)
+    print("[config] query_folder:", paths.subquery)
+    print("[config] staging:", S3_STAGING)
+    print("[config] workgroup:", ATHENA_WORKGROUP)
 
     print("[load] cluster_report_micro ...")
     micro_rep = run_sql("SELECT * FROM cluster_report_micro")

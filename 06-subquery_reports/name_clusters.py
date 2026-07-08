@@ -6,7 +6,7 @@ micro clusters of one subquery, using the OpenAI API with Structured Outputs.
 
 Inputs per cluster (from the subquery + bertopic outputs):
     * the c-TF-IDF keywords (bertopic/micro/)
-    * the top-10 cited paper titles (subqueries/{QUERY_FOLDER}/article_top10/)
+    * the top-10 cited paper titles (subqueries/{SUBQUERY}/article_top10/)
 
 Two execution modes (same schema, same prompts, same output):
     USE_BATCH = False -> concurrent synchronous calls (best for a query's ~10s-100s
@@ -14,7 +14,7 @@ Two execution modes (same schema, same prompts, same output):
     USE_BATCH = True  -> OpenAI Batch API: one JSONL, 50% cheaper, <=24h turnaround
                          (use when naming very large sets, e.g. all 191k clusters)
 
-Output: subqueries/{QUERY_FOLDER}/cluster_names/  (micro_cluster, name, short_name,
+Output: subqueries/{SUBQUERY}/cluster_names/  (micro_cluster, name, short_name,
 description, model)
 
 Requires: openai, numpy, pandas, awswrangler, pyarrow
@@ -31,22 +31,16 @@ from pathlib import Path
 import concurrent.futures as cf
 import pandas as pd
 
-from common_config import (
-    DEFAULT_QUERY_FOLDER_TOPIC,
-    keywords_dir,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
-)
+from common_config import resolve_paths
 
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-DATABASE = "q20260629"
-QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
+DATABASE = ""
+SUBQUERY = ""
 
-SUBQUERIES_ROOT = subqueries_root(DATABASE)
-KEYWORDS_DIR    = keywords_dir(DATABASE)   # micro keywords
+SUBQUERIES_ROOT = ""
+KEYWORDS_DIR = ""   # micro keywords
 ROOT_DIR        = Path(__file__).resolve().parent.parent
 KEY_FILE        = ROOT_DIR / ".key"
 
@@ -58,7 +52,7 @@ USE_BATCH   = False
 MAX_WORKERS = 8          # concurrency for the synchronous path
 MAX_CLUSTERS = None      # cap for a quick test run (None = all)
 
-OUT_BASE = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
+OUT_BASE = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,14 +60,24 @@ def parse_args() -> argparse.Namespace:
         description="Name micro clusters for a selected subquery output folder."
     )
     parser.add_argument(
-        "--database",
+        "--snapshot",
         default=None,
-        help="Classification database id, e.g. q20260629.",
+        help="Snapshot token, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Query token, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--subquery",
+        default=None,
+        help="Subquery folder name to read/write under clustering/subqueries/.",
     )
     parser.add_argument(
         "--query-folder",
         default=None,
-        help="Subquery folder name to read/write under subqueries/.",
+        help="Deprecated alias for --subquery.",
     )
     return parser.parse_args()
 
@@ -167,7 +171,7 @@ def load_inputs() -> pd.DataFrame:
     micro["titles"]   = micro["micro_cluster"].map(lambda m: titles_map.get(m, []))
     if MAX_CLUSTERS:
         micro = micro.head(MAX_CLUSTERS)
-    print(f"[load] {len(micro):,} micro clusters to name for '{QUERY_FOLDER}'")
+    print(f"[load] {len(micro):,} micro clusters to name for '{SUBQUERY}'")
     return micro
 
 
@@ -251,17 +255,25 @@ def run_batch(client, rows) -> dict:
 # main
 # ----------------------------------------------------------------------------
 def main():
-    global DATABASE, QUERY_FOLDER, SUBQUERIES_ROOT, KEYWORDS_DIR, OUT_BASE
+    global DATABASE, SUBQUERY, SUBQUERIES_ROOT, KEYWORDS_DIR, OUT_BASE
 
     args = parse_args()
-    DATABASE = resolve_database(args.database)
-    QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
-    SUBQUERIES_ROOT = subqueries_root(DATABASE)
-    KEYWORDS_DIR = keywords_dir(DATABASE)
-    OUT_BASE = f"{SUBQUERIES_ROOT}{QUERY_FOLDER}/"
+    paths = resolve_paths(
+        snapshot=args.snapshot,
+        query=args.query,
+        subquery=args.subquery,
+        query_folder=args.query_folder,
+    )
+    DATABASE = paths.database
+    SUBQUERY = paths.subquery
+    SUBQUERIES_ROOT = paths.subqueries_root
+    KEYWORDS_DIR = paths.bertopic_root
+    OUT_BASE = paths.subquery_base
 
     print("[config] database:", DATABASE)
-    print("[config] query_folder:", QUERY_FOLDER)
+    print("[config] snapshot:", paths.snapshot)
+    print("[config] query:", paths.query)
+    print("[config] subquery:", SUBQUERY)
 
     import awswrangler as wr
     rows = load_inputs()

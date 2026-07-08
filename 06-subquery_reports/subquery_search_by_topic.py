@@ -12,7 +12,7 @@ Matching:
     NB: search uses the title embeddings, NOT the images/ augmented vectors --
     those encode cluster identity and would match on the wrong signal.
 
-Outputs (under subqueries/{QUERY_FOLDER}/):
+Outputs (under subqueries/{SUBQUERY}/):
     matches/                 matched micro clusters + similarity + size (summary)
     article_top10/           top-10 cited papers per matched micro cluster
     cluster_report_micro/    micro report rows for the matched clusters
@@ -31,18 +31,14 @@ import numpy as np
 import pandas as pd
 
 from common_config import (
-    DEFAULT_QUERY_FOLDER_TOPIC,
-    classification_root,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
+    DEFAULT_STAGING,
+    DEFAULT_WORKGROUP,
+    resolve_paths,
 )
 
 # ----------------------------------------------------------------------------
 # QUERY PARAMETERS
 # ----------------------------------------------------------------------------
-DEFAULT_QUERY_FOLDER = DEFAULT_QUERY_FOLDER_TOPIC
-QUERY_FOLDER = DEFAULT_QUERY_FOLDER          # S3 subfolder name for this query
 QUERY_TEXT   = "Diversity equity and inclusion (DEI) innovation frameworks, research co-production with marginalized communities, contemporary intersectionality addressing overlapping discrimination axes, diversity-driven team science generating academic excellence, inclusive dialogue strategies, mitigating implicit unconscious bias in academic evaluation paradigms, gender equity initiatives in STEM leadership, algorithmic fairness and digital accessibility, inclusive university models transforming peer-review criteria. Disability equity frameworks based on the social model, assistive technology AT engineering, accessible information systems and digital campus inclusion, neurodiversity support algorithms, DO-IT Japan transition models, barrier-free educational infrastructure and universal design in higher education."
 THRESHOLD    = 0.50                         # min cosine similarity to 
 MIN_SIZE     = 30                           # min papers per micro cluster
@@ -52,30 +48,49 @@ MIN_SIZE     = 30                           # min papers per micro cluster
 # ----------------------------------------------------------------------------
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"   # must match the pipeline
 
-DATABASE  = "q20260629"
-S3_STAGING = "s3://openalex-outputs/athena-staging/"
-MICRO_EMBEDDINGS = f"{classification_root(DATABASE)}bertopic/micro_embeddings/"
-OUT_ROOT   = subqueries_root(DATABASE)
+DATABASE = ""
+SUBQUERY = ""
+S3_STAGING = DEFAULT_STAGING
+ATHENA_WORKGROUP = DEFAULT_WORKGROUP
+MICRO_EMBEDDINGS = ""
+OUT_BASE = ""
 
 TOP_PAPERS   = 10        # top cited papers per cluster
 TOP_ENTITIES = 20        # top countries / institutions per cluster
-
-OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create subquery outputs by topic similarity over micro centroids."
     )
     parser.add_argument(
-        "--database",
+        "--snapshot",
         default=None,
-        help="Classification database id, e.g. q20260629.",
+        help="Snapshot token, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Query token, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--subquery",
+        default=None,
+        help="Subquery folder name under clustering/subqueries/.",
     )
     parser.add_argument(
         "--query-folder",
         default=None,
-        help="S3 subfolder name under subqueries/ for this run.",
+        help="Deprecated alias for --subquery.",
+    )
+    parser.add_argument(
+        "--staging",
+        default=DEFAULT_STAGING,
+        help="Athena query output S3 path.",
+    )
+    parser.add_argument(
+        "--workgroup",
+        default=DEFAULT_WORKGROUP,
+        help="Athena workgroup.",
     )
     parser.add_argument(
         "--min-size",
@@ -128,8 +143,13 @@ def _in_clause(ids) -> str:
 
 def run_sql(sql: str) -> pd.DataFrame:
     import awswrangler as wr
-    return wr.athena.read_sql_query(sql, database=DATABASE, s3_output=S3_STAGING,
-                                    ctas_approach=False)
+    return wr.athena.read_sql_query(
+        sql,
+        database=DATABASE,
+        s3_output=S3_STAGING,
+        workgroup=ATHENA_WORKGROUP,
+        ctas_approach=False,
+    )
 
 
 def write(df: pd.DataFrame, name: str):
@@ -142,18 +162,29 @@ def write(df: pd.DataFrame, name: str):
 # main
 # ----------------------------------------------------------------------------
 def main():
-    global DATABASE, QUERY_FOLDER, OUT_ROOT, OUT_BASE, MICRO_EMBEDDINGS, MIN_SIZE
+    global DATABASE, SUBQUERY, OUT_BASE, MICRO_EMBEDDINGS, MIN_SIZE, S3_STAGING, ATHENA_WORKGROUP
 
     args = parse_args()
-    DATABASE = resolve_database(args.database)
-    QUERY_FOLDER = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER)
-    OUT_ROOT = subqueries_root(DATABASE)
-    OUT_BASE = f"{OUT_ROOT}{QUERY_FOLDER}/"
-    MICRO_EMBEDDINGS = f"{classification_root(DATABASE)}bertopic/micro_embeddings/"
+    paths = resolve_paths(
+        snapshot=args.snapshot,
+        query=args.query,
+        subquery=args.subquery,
+        query_folder=args.query_folder,
+    )
+    DATABASE = paths.database
+    SUBQUERY = paths.subquery
+    OUT_BASE = paths.subquery_base
+    MICRO_EMBEDDINGS = f"{paths.bertopic_root}micro_embeddings/"
+    S3_STAGING = args.staging
+    ATHENA_WORKGROUP = args.workgroup
     MIN_SIZE = int(args.min_size)
 
     print("[config] database:", DATABASE)
-    print("[config] query_folder:", QUERY_FOLDER)
+    print("[config] snapshot:", paths.snapshot)
+    print("[config] query:", paths.query)
+    print("[config] subquery:", SUBQUERY)
+    print("[config] staging:", S3_STAGING)
+    print("[config] workgroup:", ATHENA_WORKGROUP)
     print("[config] min_size:", MIN_SIZE)
 
     qvec = embed_query(QUERY_TEXT)

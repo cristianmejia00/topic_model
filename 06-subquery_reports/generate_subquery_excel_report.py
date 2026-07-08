@@ -1,7 +1,7 @@
 """Generate four Excel exports for a subquery result set.
 
 Outputs are written locally to:
-  excel/{database}/{query_folder}/
+    excel/{database}/{subquery}/
 
 Files created:
 1) article_report_top10.xlsx
@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import math
 from pathlib import Path
-import sys
 from typing import Any
 
 import awswrangler as wr
@@ -27,40 +26,46 @@ import pandas as pd
 import pycountry
 
 ROOT = Path(__file__).resolve().parent
-SUBQUERIES_DIR = ROOT / "subqueries"
-if str(SUBQUERIES_DIR) not in sys.path:
-    sys.path.insert(0, str(SUBQUERIES_DIR))
 
-from common_config import (  # type: ignore
-    DEFAULT_QUERY_FOLDER_TOPIC,
-    macro_name_path,
-    resolve_database,
-    resolve_query_folder,
-    subqueries_root,
+from common_config import (
+    DEFAULT_STAGING,
+    DEFAULT_WORKGROUP,
+    resolve_paths,
 )
-
-
-DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate Excel exports for one subquery folder."
     )
     parser.add_argument(
-        "--database",
+        "--snapshot",
         default=None,
-        help="Classification database id, e.g. q20260629.",
+        help="Snapshot token, e.g. 2026-06-26.",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Query token, e.g. q20260629.",
+    )
+    parser.add_argument(
+        "--subquery",
+        default=None,
+        help="Subquery folder name under clustering/subqueries/.",
     )
     parser.add_argument(
         "--query-folder",
         default=None,
-        help="Subquery folder name under subqueries/.",
+        help="Deprecated alias for --subquery.",
     )
     parser.add_argument(
         "--staging",
         default=DEFAULT_STAGING,
         help="Athena query output S3 path.",
+    )
+    parser.add_argument(
+        "--workgroup",
+        default=DEFAULT_WORKGROUP,
+        help="Athena workgroup.",
     )
     return parser.parse_args()
 
@@ -104,11 +109,12 @@ def iso2_to_country_name(value: Any) -> str:
     return raw
 
 
-def run_sql(sql: str, *, database: str, staging: str) -> pd.DataFrame:
+def run_sql(sql: str, *, database: str, staging: str, workgroup: str) -> pd.DataFrame:
     return wr.athena.read_sql_query(
         sql,
         database=database,
         s3_output=staging,
+        workgroup=workgroup,
         ctas_approach=False,
     )
 
@@ -117,8 +123,7 @@ def in_clause(values: list[int]) -> str:
     return ", ".join(str(int(v)) for v in values)
 
 
-def load_macro_name_map(database: str) -> dict[int, str]:
-    path = macro_name_path(database)
+def load_macro_name_map(path: str) -> dict[int, str]:
     try:
         df = wr.s3.read_parquet(path)
     except Exception:
@@ -241,7 +246,7 @@ def build_cluster_table(
     return out[existing_first + remaining]
 
 
-def build_country_summary(*, database: str, staging: str, micro_ids: list[int]) -> pd.DataFrame:
+def build_country_summary(*, database: str, staging: str, workgroup: str, micro_ids: list[int]) -> pd.DataFrame:
     sql = f"""
     SELECT
         micro_cluster,
@@ -254,7 +259,7 @@ def build_country_summary(*, database: str, staging: str, micro_ids: list[int]) 
     WHERE micro_cluster IN ({in_clause(micro_ids)})
     GROUP BY micro_cluster, country
     """
-    out = run_sql(sql, database=database, staging=staging)
+    out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
     out["micro_cluster"] = pd.to_numeric(out["micro_cluster"], errors="coerce")
     out["freq"] = pd.to_numeric(out["freq"], errors="coerce")
     out["avg_publication_year"] = pd.to_numeric(out["avg_publication_year"], errors="coerce")
@@ -264,7 +269,7 @@ def build_country_summary(*, database: str, staging: str, micro_ids: list[int]) 
     return out.sort_values(["micro_cluster", "freq", "country"], ascending=[True, False, True]).reset_index(drop=True)
 
 
-def build_institution_summary(*, database: str, staging: str, micro_ids: list[int]) -> pd.DataFrame:
+def build_institution_summary(*, database: str, staging: str, workgroup: str, micro_ids: list[int]) -> pd.DataFrame:
     sql = f"""
     SELECT
         micro_cluster,
@@ -277,7 +282,7 @@ def build_institution_summary(*, database: str, staging: str, micro_ids: list[in
     WHERE micro_cluster IN ({in_clause(micro_ids)})
     GROUP BY micro_cluster, institution
     """
-    out = run_sql(sql, database=database, staging=staging)
+    out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
     out["micro_cluster"] = pd.to_numeric(out["micro_cluster"], errors="coerce")
     out["freq"] = pd.to_numeric(out["freq"], errors="coerce")
     out["avg_publication_year"] = pd.to_numeric(out["avg_publication_year"], errors="coerce")
@@ -303,24 +308,34 @@ def write_excel(path: Path, sheets: dict[str, pd.DataFrame]) -> None:
 
 def main() -> None:
     args = parse_args()
-    database = resolve_database(args.database)
-    query_folder = resolve_query_folder(args.query_folder, DEFAULT_QUERY_FOLDER_TOPIC)
+    paths = resolve_paths(
+        snapshot=args.snapshot,
+        query=args.query,
+        subquery=args.subquery,
+        query_folder=args.query_folder,
+    )
+    database = paths.database
+    query_folder = paths.subquery
 
-    out_base = f"{subqueries_root(database)}{query_folder}/"
+    out_base = paths.subquery_base
     output_dir = ROOT / "excel" / database / query_folder
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("[config] database:", database)
+    print("[config] snapshot:", paths.snapshot)
+    print("[config] query:", paths.query)
     print("[config] query_folder:", query_folder)
     print("[config] source:", out_base)
     print("[config] output_dir:", output_dir)
+    print("[config] staging:", args.staging)
+    print("[config] workgroup:", args.workgroup)
 
     article_top10 = read_subset(out_base, "article_top10", required=True)
     micro_rep = read_subset(out_base, "cluster_report_micro", required=True)
     meso_rep = read_subset(out_base, "cluster_report_meso", required=True)
     macro_rep = read_subset(out_base, "cluster_report_macro", required=True)
     micro_names = read_subset(out_base, "cluster_names", required=False)
-    macro_name_map = load_macro_name_map(database)
+    macro_name_map = load_macro_name_map(paths.macro_name_path)
 
     article_df = build_article_table(article_top10)
 
@@ -368,8 +383,18 @@ def main() -> None:
     if not micro_ids:
         raise RuntimeError("No micro cluster IDs found in cluster_report_micro.")
 
-    countries_df = build_country_summary(database=database, staging=args.staging, micro_ids=micro_ids)
-    institutions_df = build_institution_summary(database=database, staging=args.staging, micro_ids=micro_ids)
+    countries_df = build_country_summary(
+        database=database,
+        staging=args.staging,
+        workgroup=args.workgroup,
+        micro_ids=micro_ids,
+    )
+    institutions_df = build_institution_summary(
+        database=database,
+        staging=args.staging,
+        workgroup=args.workgroup,
+        micro_ids=micro_ids,
+    )
 
     article_path = output_dir / "article_report_top10.xlsx"
     clusters_path = output_dir / "cluster_profiles.xlsx"

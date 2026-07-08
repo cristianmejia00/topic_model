@@ -1,109 +1,120 @@
 # Subqueries Pipeline Guide
 
-This folder contains the end-to-end workflow for building one subquery dataset,
-naming its micro clusters, generating a static HTML report, and exploring results.
+This folder contains the step-06 workflow for building one subquery dataset,
+naming its micro clusters, generating HTML/Excel outputs, and exploring results.
+
+## Required Context Contract
+
+All step-06 scripts now resolve context from:
+
+1. CLI arguments
+2. Environment variables
+
+Required context keys:
+
+- `snapshot`: `--snapshot` or `TOPIC_MODEL_SNAPSHOT`
+- `query`: `--query` or `TOPIC_MODEL_QUERY`
+- `subquery`: `--subquery` or `TOPIC_MODEL_SUBQUERY`
+
+Compatibility alias:
+
+- `--query-folder` and `TOPIC_MODEL_QUERY_FOLDER` are supported as aliases for `subquery`.
+
+Derived database name:
+
+- `snapshot_{SNAPSHOT}-{QUERY}`
+
+Only these defaults remain:
+
+- Athena staging: `s3://openalex-outputs/athena-staging/`
+- Athena workgroup: `primary`
 
 ## Scripts in This Folder
 
 - `run_subquery_search.py`
-  - Single entrypoint for search mode selection (`topic`, `filters`, `passthrough`).
+	- Entry point for `topic`, `filters`, or `passthrough` search.
 - `subquery_search_by_topic.py`
-  - Topic-embedding search over micro centroids.
+	- Topic-embedding search over micro centroids.
 - `subquery_search_by_filters.py`
-  - Numeric filter search (supports repeated `--filter` clauses combined with `AND`).
+	- Numeric filter search (repeated `--filter` combined with `AND`).
 - `subquery_search_passthrough.py`
-  - No-filter export of all micro clusters.
+	- No-filter export of all micro clusters.
 - `name_clusters.py`
-  - LLM-based naming for micro clusters in a selected query folder.
+	- LLM naming for matched micro clusters.
 - `generate_subquery_html_report.py`
-  - Builds a static HTML report and uploads it to S3.
+	- Builds static HTML and uploads `report/` to S3.
+- `generate_subquery_excel_report.py`
+	- Builds local 4-file Excel report pack.
+- `generate_utokyo_subquery_excel_report.py`
+	- Builds local UTokyo-focused workbook.
 - `explore_subquery.py`
-  - Terminal explorer for the generated subsets.
+	- Terminal explorer for generated subsets.
+- `explore_names.py`
+	- Prints generated cluster names from S3.
 - `common_config.py`
-  - Shared defaults and path resolvers used by all scripts.
+	- Shared context/path resolution for step-06.
 
-## Configuration Precedence
+## Execution Order
 
-All subquery scripts resolve `database` and `query_folder` in this order:
+Recommended run sequence after step-05 Athena + BERTopic inputs are available:
 
-1. CLI argument (`--database`, `--query-folder`)
-2. Environment variable (`TOPIC_MODEL_DATABASE`, `TOPIC_MODEL_QUERY_FOLDER`)
-3. Default in `common_config.py`
-
-### Optional environment setup
-
-```bash
-export TOPIC_MODEL_DATABASE=q20260629
-export TOPIC_MODEL_QUERY_FOLDER=quantum_computing
-```
-
-## Code Execution Order
-
-Use this order after the core pipeline has already created Athena + BERTopic inputs.
-
-### Recommended path (single entrypoint)
-
-1. Run one search mode via `run_subquery_search.py`.
-2. Name clusters for that query folder.
-3. Generate the HTML report.
-4. Explore in terminal (optional, for QC).
+1. Run one search mode.
+2. Name clusters.
+3. Generate HTML and/or Excel outputs.
+4. Explore outputs for QC (optional).
 
 ```bash
 source .venv/bin/activate
-DB=q20260629
-QUERY_FOLDER=quantum_computing
+
+SNAPSHOT=2026-06-26
+QUERY=q20260629
+SUBQUERY=quantum_computing
 
 # 1) choose one search mode
-python subqueries/run_subquery_search.py --search topic --database "$DB" --query-folder "$QUERY_FOLDER"
-# or
-# QUERY_FOLDER=filters_ave_py_ge_2022_and_recency_py_ge_0_4
-python subqueries/run_subquery_search.py --search filters --database "$DB" --query-folder "$QUERY_FOLDER" --filter 'ave_py>=2022' --filter 'recency_py>=0.4'
-# or
-# QUERY_FOLDER=everything
-python subqueries/run_subquery_search.py --search passthrough --database "$DB" --query-folder "$QUERY_FOLDER"
+python 06-subquery_reports/run_subquery_search.py \
+	--search topic \
+	--snapshot "$SNAPSHOT" \
+	--query "$QUERY" \
+	--subquery "$SUBQUERY"
+
+# alternate search modes:
+# python 06-subquery_reports/run_subquery_search.py --search filters --snapshot "$SNAPSHOT" --query "$QUERY" --subquery filters_ave_py_ge_2023_and_recency_py_ge_0_5_and_size_50 --filter 'ave_py>=2023' --filter 'recency_py>=0.5' --filter 'publications>=50'
+# python 06-subquery_reports/run_subquery_search.py --search passthrough --snapshot "$SNAPSHOT" --query "$QUERY" --subquery everything
 
 # 2) name matched clusters
-python subqueries/name_clusters.py --database "$DB" --query-folder "$QUERY_FOLDER"
+python 06-subquery_reports/name_clusters.py \
+	--snapshot "$SNAPSHOT" \
+	--query "$QUERY" \
+	--subquery "$SUBQUERY"
 
-# 3) build and publish report
-python subqueries/generate_subquery_html_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
+# 3) build reports
+python 06-subquery_reports/generate_subquery_html_report.py \
+	--snapshot "$SNAPSHOT" \
+	--query "$QUERY" \
+	--subquery "$SUBQUERY"
 
-# 3b) build local Excel report pack (4 files)
-python subqueries/generate_subquery_excel_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
+python 06-subquery_reports/generate_subquery_excel_report.py \
+	--snapshot "$SNAPSHOT" \
+	--query "$QUERY" \
+	--subquery "$SUBQUERY"
 
-# 3c) build UTokyo-focused workbook (2 sheets)
-python subqueries/generate_utokyo_subquery_excel_report.py --database "$DB" --query-folder "$QUERY_FOLDER"
+python 06-subquery_reports/generate_utokyo_subquery_excel_report.py \
+	--snapshot "$SNAPSHOT" \
+	--query "$QUERY" \
+	--subquery "$SUBQUERY"
 
-# 4) inspect in terminal
-python subqueries/explore_subquery.py --database "$DB" --query-folder "$QUERY_FOLDER"
+# 4) optional QC
+python 06-subquery_reports/explore_subquery.py \
+	--snapshot "$SNAPSHOT" \
+	--query "$QUERY" \
+	--subquery "$SUBQUERY"
 ```
 
-### Direct script path (advanced)
+## Canonical Output Layout
 
-Use this only if you intentionally want to bypass the dispatcher.
+All S3 outputs for step-06 land under:
 
-```bash
-# topic search
-python subqueries/subquery_search_by_topic.py --database q20260629 --query-folder quantum_computing
-
-# filters search
-python subqueries/subquery_search_by_filters.py --database q20260629 --query-folder filters_ave_py_ge_2022_and_recency_py_ge_0_4 --filter 'ave_py>=2022' --filter 'recency_py>=0.4'
-
-# passthrough search
-python subqueries/subquery_search_passthrough.py --database q20260629 --query-folder everything
-```
-
-## Default Query Folders
-
-- Topic search default: `quantum_computing`
-- Filter search default: `filters_ave_py_ge_2022_and_recency_py_ge_0_4`
-- Passthrough default: `everything`
-
-## Output Layout
-
-For a given query folder, outputs are written under:
-
-`s3://openalex-outputs/classification/{database}/subqueries/{query_folder}/`
+`s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/clustering/subqueries/{SUBQUERY}/`
 
 Expected datasets:
 
@@ -115,35 +126,32 @@ Expected datasets:
 - `top_countries/`
 - `top_institutions/`
 - `cluster_names/` (after naming)
-- `report/` (after report generation)
+- `report/` (after HTML generation)
 
-Local report output:
+Local outputs:
 
-- `docs/{query_folder}/report/index.html`
-
-Local Excel output:
-
-- `excel/{database}/{query_folder}/article_report_top10.xlsx`
-- `excel/{database}/{query_folder}/cluster_profiles.xlsx`
-- `excel/{database}/{query_folder}/countries_summary.xlsx`
-- `excel/{database}/{query_folder}/institutions_summary.xlsx`
-
-Local UTokyo output:
-
-- `utokyo/{database}/{query_folder}/utokyo_cluster_and_articles.xlsx`
+- HTML: `docs/{database}/{subquery}/report/index.html`
+- Excel pack:
+	- `excel/{database}/{subquery}/article_report_top10.xlsx`
+	- `excel/{database}/{subquery}/cluster_profiles.xlsx`
+	- `excel/{database}/{subquery}/countries_summary.xlsx`
+	- `excel/{database}/{subquery}/institutions_summary.xlsx`
+- UTokyo workbook:
+	- `utokyo/{database}/{subquery}/utokyo_cluster_and_articles.xlsx`
 
 ## Quick Validation
 
-After editing subquery scripts, run:
-
 ```bash
 .venv/bin/python -m py_compile \
-	subqueries/common_config.py \
-	subqueries/run_subquery_search.py \
-	subqueries/subquery_search_by_topic.py \
-	subqueries/subquery_search_by_filters.py \
-	subqueries/subquery_search_passthrough.py \
-	subqueries/name_clusters.py \
-	subqueries/generate_subquery_html_report.py \
-	subqueries/explore_subquery.py
+	06-subquery_reports/common_config.py \
+	06-subquery_reports/run_subquery_search.py \
+	06-subquery_reports/subquery_search_by_topic.py \
+	06-subquery_reports/subquery_search_by_filters.py \
+	06-subquery_reports/subquery_search_passthrough.py \
+	06-subquery_reports/name_clusters.py \
+	06-subquery_reports/generate_subquery_html_report.py \
+	06-subquery_reports/generate_subquery_excel_report.py \
+	06-subquery_reports/generate_utokyo_subquery_excel_report.py \
+	06-subquery_reports/explore_subquery.py \
+	06-subquery_reports/explore_names.py
 ```
