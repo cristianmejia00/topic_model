@@ -2,7 +2,7 @@
 Create/refresh Glue Catalog database and discover tables with a crawler.
 
 This script:
-1) Creates a Glue database named exactly as --database (if missing).
+1) Creates a Glue database named as snapshot_{SNAPSHOT}-{QUERY} (if missing).
 2) Creates or updates one Glue crawler targeting both required S3 roots:
     - s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/
     - s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/
@@ -11,14 +11,12 @@ This script:
 
 Usage:
     .venv/bin/python create_glue_catalog.py \
-        --database q20260629 \
         --snapshot 2026-06-26 \
         --query q20260629 \
         --crawler-role AWSGlueServiceRole-openalex
 
     # Destructive reset (recreate database and recrawl from scratch)
     .venv/bin/python create_glue_catalog.py \
-        --database q20260629 \
         --snapshot 2026-06-26 \
         --query q20260629 \
         --crawler-role AWSGlueServiceRole-openalex \
@@ -48,11 +46,6 @@ DEFAULT_CRAWLER_ROLE_ENV = "GLUE_CRAWLER_ROLE"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create Glue database and crawl source paths for table discovery."
-    )
-    parser.add_argument(
-        "--database",
-        required=True,
-        help="Glue database name to create/use, e.g. q20260629.",
     )
     parser.add_argument(
         "--snapshot",
@@ -269,14 +262,15 @@ def main() -> None:
             "Missing crawler role. Provide --crawler-role or set GLUE_CRAWLER_ROLE."
         )
 
-    paths = RootPaths(database=args.database, snapshot=args.snapshot, query=args.query)
+    paths = RootPaths(snapshot=args.snapshot, query=args.query)
+    database = paths.database
     s3_paths = [paths.results_root, paths.network_root]
 
     crawler_name = args.crawler_name or sanitize_name(
-        f"{args.database}_{args.snapshot}_{args.query}_bootstrap"
+        f"{database}_{args.snapshot}_{args.query}_bootstrap"
     )
 
-    print(f"[config] database={args.database}")
+    print(f"[config] database={database}")
     print(f"[config] snapshot={args.snapshot}")
     print(f"[config] query={args.query}")
     print(f"[config] crawler_name={crawler_name}")
@@ -294,13 +288,13 @@ def main() -> None:
     try:
         if args.hard_reset:
             delete_crawler_if_exists(glue, crawler_name)
-            reset_database(glue, args.database)
+            reset_database(glue, database)
 
-        ensure_database(glue, args.database)
+        ensure_database(glue, database)
         ensure_crawler(
             glue,
             crawler_name=crawler_name,
-            database=args.database,
+            database=database,
             crawler_role=crawler_role,
             s3_paths=s3_paths,
         )

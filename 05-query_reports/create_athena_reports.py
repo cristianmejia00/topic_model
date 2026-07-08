@@ -8,8 +8,8 @@ Tables created in order:
 4) cluster_report_macro
 
 Usage:
-    .venv/bin/python create_athena_reports.py --database q20260629 --snapshot 2026-06-26 --query q20260629
-    .venv/bin/python create_athena_reports.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --overwrite
+    .venv/bin/python create_athena_reports.py --snapshot 2026-06-26 --query q20260629
+    .venv/bin/python create_athena_reports.py --snapshot 2026-06-26 --query q20260629 --overwrite
 
 Notes:
 - Without --overwrite, CTAS will fail if target table/location already exists.
@@ -41,8 +41,8 @@ class TableSpec:
     sql: str
 
 
-def build_table_specs(database: str, snapshot: str, query: str) -> list[TableSpec]:
-    base = RootPaths(database=database, snapshot=snapshot, query=query).clustering_root
+def build_table_specs(snapshot: str, query: str) -> list[TableSpec]:
+    base = RootPaths(snapshot=snapshot, query=query).clustering_root
 
     article_sql = f"""
 CREATE TABLE article_report
@@ -247,7 +247,6 @@ def run_athena_query(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create article/cluster Athena report tables.")
-    parser.add_argument("--database", required=True, help="Glue/Athena database name.")
     parser.add_argument(
         "--snapshot",
         default=os.getenv(SNAPSHOT_ENV_VAR, "").strip() or None,
@@ -281,10 +280,11 @@ def main() -> None:
     if not args.query:
         raise RuntimeError(f"Missing --query (or env {QUERY_ENV_VAR}).")
 
-    specs = build_table_specs(args.database, args.snapshot, args.query)
+    paths = RootPaths(snapshot=args.snapshot, query=args.query)
+    specs = build_table_specs(args.snapshot, args.query)
     athena = boto3.client("athena")
 
-    print(f"[config] database={args.database} workgroup={args.workgroup}")
+    print(f"[config] database={paths.database} workgroup={args.workgroup}")
     print(f"[config] snapshot={args.snapshot} query={args.query}")
     print(f"[config] staging={args.staging}")
 
@@ -295,7 +295,7 @@ def main() -> None:
             qid = run_athena_query(
                 athena,
                 drop_sql,
-                database=args.database,
+                database=paths.database,
                 staging=args.staging,
                 workgroup=args.workgroup,
             )
@@ -308,7 +308,7 @@ def main() -> None:
         qid = run_athena_query(
             athena,
             spec.sql,
-            database=args.database,
+            database=paths.database,
             staging=args.staging,
             workgroup=args.workgroup,
         )

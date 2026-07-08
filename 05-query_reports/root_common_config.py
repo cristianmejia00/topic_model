@@ -16,9 +16,12 @@ QUERY_ENV_VAR = "TOPIC_MODEL_QUERY"
 
 @dataclass(frozen=True)
 class RootPaths:
-    database: str
     snapshot: str
     query: str
+
+    @property
+    def database(self) -> str:
+        return build_database_name(self.snapshot, self.query)
 
     @property
     def results_root(self) -> str:
@@ -70,15 +73,14 @@ class RootPaths:
         return f"{self.classification_root}article_report/"
 
 
-def resolve_database_from_env() -> str:
-    """Require database to be provided via entrypoint environment."""
-    value = os.getenv(DB_ENV_VAR, "").strip()
-    if not value:
-        raise RuntimeError(
-            f"Missing required environment variable {DB_ENV_VAR}. "
-            "Run scripts through run_root_pipeline.py with --database."
-        )
-    return value
+def build_database_name(snapshot: str, query: str) -> str:
+    snap = str(snapshot or "").strip()
+    qry = str(query or "").strip()
+    if not snap:
+        raise RuntimeError("Snapshot is required to derive database name.")
+    if not qry:
+        raise RuntimeError("Query is required to derive database name.")
+    return f"snapshot_{snap}-{qry}"
 
 
 def resolve_snapshot_from_env() -> str:
@@ -103,7 +105,6 @@ def resolve_query_from_env() -> str:
 
 def get_root_paths() -> RootPaths:
     return RootPaths(
-        database=resolve_database_from_env(),
         snapshot=resolve_snapshot_from_env(),
         query=resolve_query_from_env(),
     )

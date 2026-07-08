@@ -18,14 +18,12 @@ For a selected Glue/Athena database + version, this script:
 
 Usage:
     .venv/bin/python migrate_meso_as_micro.py \
-        --database quantum \
         --snapshot 2026-06-26 \
         --query quantum \
         --version version3
 
 Dry-run example:
     .venv/bin/python migrate_meso_as_micro.py \
-        --database quantum \
         --snapshot 2026-06-26 \
         --query quantum \
         --version version3 \
@@ -57,7 +55,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Promote meso assignments to effective micro assignments in source table."
     )
-    parser.add_argument("--database", required=True, help="Glue/Athena database name, e.g. quantum.")
     parser.add_argument(
         "--snapshot",
         required=True,
@@ -235,7 +232,8 @@ def write_manifest(manifest_path: str, payload: dict[str, Any]) -> None:
 def main() -> None:
     args = parse_args()
 
-    database = safe_table_name(args.database)
+    paths = RootPaths(snapshot=args.snapshot, query=args.query)
+    database = paths.database
     source_table = safe_table_name(args.source_table)
     version_token = sanitize_token(args.version)
     run_id = sanitize_token(args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"), max_len=64)
@@ -243,7 +241,6 @@ def main() -> None:
     migrated_temp_table = safe_table_name(f"{source_table}__migrated__{version_token}__{run_id}")
     archive_table = safe_table_name(f"{source_table}__archive__{version_token}__{run_id}")
 
-    paths = RootPaths(database=database, snapshot=args.snapshot, query=args.query)
     migration_root = f"{paths.clustering_root}migrations/meso_as_micro/{version_token}/{run_id}/"
     migrated_location = f"{migration_root}migrated_table/"
     archive_location = f"{migration_root}archive_snapshot/"

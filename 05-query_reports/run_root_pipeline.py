@@ -2,15 +2,15 @@
 Single entrypoint for root-level pipeline scripts.
 
 Design:
-- Database is required (no default).
+- Database is derived as snapshot_{SNAPSHOT}-{QUERY}.
 - Snapshot and query are required for S3 layout resolution.
 - All root scripts receive context via TOPIC_MODEL_DATABASE/TOPIC_MODEL_SNAPSHOT/TOPIC_MODEL_QUERY.
 - Existing outputs are blocked unless --force is provided.
 
 Examples:
-    .venv/bin/python run_root_pipeline.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --step bertopic
-    .venv/bin/python run_root_pipeline.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --step macro_colors --step macro_names
-    .venv/bin/python run_root_pipeline.py --database q20260629 --snapshot 2026-06-26 --query q20260629 --step athena_reports --force
+    .venv/bin/python run_root_pipeline.py --snapshot 2026-06-26 --query q20260629 --step bertopic
+    .venv/bin/python run_root_pipeline.py --snapshot 2026-06-26 --query q20260629 --step macro_colors --step macro_names
+    .venv/bin/python run_root_pipeline.py --snapshot 2026-06-26 --query q20260629 --step athena_reports --force
 """
 
 from __future__ import annotations
@@ -21,13 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from root_common_config import (
-    DB_ENV_VAR,
-    QUERY_ENV_VAR,
-    RootPaths,
-    SNAPSHOT_ENV_VAR,
-    ensure_outputs_writable,
-)
+from root_common_config import DB_ENV_VAR, QUERY_ENV_VAR, RootPaths, SNAPSHOT_ENV_VAR, ensure_outputs_writable
 
 
 ALL_STEPS = [
@@ -45,12 +39,7 @@ ALL_STEPS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run root-level pipeline scripts with required database and overwrite guards."
-    )
-    parser.add_argument(
-        "--database",
-        required=True,
-        help="Glue/Athena database id, e.g. q20260629 (required).",
+        description="Run root-level pipeline scripts with snapshot/query-derived database and overwrite guards."
     )
     parser.add_argument(
         "--snapshot",
@@ -178,8 +167,6 @@ def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[s
         cmd = [
             py,
             str(repo_root / "migrate_meso_as_micro.py"),
-            "--database",
-            args.database,
             "--snapshot",
             args.snapshot,
             "--query",
@@ -199,8 +186,6 @@ def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[s
         cmd = [
             py,
             str(repo_root / "create_athena_reports.py"),
-            "--database",
-            args.database,
             "--snapshot",
             args.snapshot,
             "--query",
@@ -218,8 +203,10 @@ def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[s
         return [
             py,
             str(repo_root / "audit_athena_hierarchy.py"),
-            "--database",
-            args.database,
+            "--snapshot",
+            args.snapshot,
+            "--query",
+            args.query,
             "--staging",
             args.staging,
             "--show-limit",
@@ -240,17 +227,17 @@ def step_command(step: str, repo_root: Path, args: argparse.Namespace) -> list[s
 def main() -> None:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent
-    paths = RootPaths(database=args.database, snapshot=args.snapshot, query=args.query)
+    paths = RootPaths(snapshot=args.snapshot, query=args.query)
 
     if "meso_as_micro" in args.step and not str(args.version or "").strip():
         raise RuntimeError("--version is required when running --step meso_as_micro")
 
     env = os.environ.copy()
-    env[DB_ENV_VAR] = args.database
+    env[DB_ENV_VAR] = paths.database
     env[SNAPSHOT_ENV_VAR] = args.snapshot
     env[QUERY_ENV_VAR] = args.query
 
-    print(f"[entrypoint] database={args.database}")
+    print(f"[entrypoint] database={paths.database}")
     print(f"[entrypoint] snapshot={args.snapshot}")
     print(f"[entrypoint] query={args.query}")
     print(f"[entrypoint] force={args.force}")

@@ -8,14 +8,17 @@ Checks performed:
 4) samples of problematic IDs
 
 Usage:
-    .venv/bin/python audit_athena_hierarchy.py --database q20260629
+    .venv/bin/python audit_athena_hierarchy.py --snapshot 2026-06-26 --query q20260629
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 
 import awswrangler as wr
+
+from root_common_config import QUERY_ENV_VAR, RootPaths, SNAPSHOT_ENV_VAR
 
 
 DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
@@ -23,7 +26,22 @@ DEFAULT_STAGING = "s3://openalex-outputs/athena-staging/"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit hierarchy consistency in Athena tables.")
-    parser.add_argument("--database", required=True, help="Glue/Athena database name")
+    parser.add_argument(
+        "--snapshot",
+        default=os.getenv(SNAPSHOT_ENV_VAR, "").strip() or None,
+        help=(
+            "Snapshot token for Athena database derivation, e.g. 2026-06-26. "
+            f"Defaults to ${SNAPSHOT_ENV_VAR} if set."
+        ),
+    )
+    parser.add_argument(
+        "--query",
+        default=os.getenv(QUERY_ENV_VAR, "").strip() or None,
+        help=(
+            "Query token for Athena database derivation, e.g. q20260629. "
+            f"Defaults to ${QUERY_ENV_VAR} if set."
+        ),
+    )
     parser.add_argument("--staging", default=DEFAULT_STAGING, help="Athena query output S3 path")
     parser.add_argument(
         "--show-limit",
@@ -45,8 +63,14 @@ def q(sql: str, *, database: str, staging: str):
 
 def main() -> None:
     args = parse_args()
+    if not args.snapshot:
+        raise RuntimeError(f"Missing --snapshot (or env {SNAPSHOT_ENV_VAR}).")
+    if not args.query:
+        raise RuntimeError(f"Missing --query (or env {QUERY_ENV_VAR}).")
+    paths = RootPaths(snapshot=args.snapshot, query=args.query)
 
-    print(f"[config] database={args.database}")
+    print(f"[config] database={paths.database}")
+    print(f"[config] snapshot={args.snapshot} query={args.query}")
     print(f"[config] staging={args.staging}")
 
     coverage = q(
@@ -60,7 +84,7 @@ def main() -> None:
             SUM(CASE WHEN micro_cluster IS NOT NULL AND macro_cluster IS NULL THEN 1 ELSE 0 END) AS docs_micro_without_macro
         FROM article_report
         """,
-        database=args.database,
+        database=paths.database,
         staging=args.staging,
     )
 
@@ -88,7 +112,7 @@ def main() -> None:
             SUM(CASE WHEN macro_distinct_nonnull > 1 THEN 1 ELSE 0 END) AS micro_with_multiple_macro
         FROM per_micro
         """,
-        database=args.database,
+        database=paths.database,
         staging=args.staging,
     )
 
@@ -111,7 +135,7 @@ def main() -> None:
             SUM(CASE WHEN macro_distinct_nonnull > 1 THEN 1 ELSE 0 END) AS meso_with_multiple_macro
         FROM per_meso
         """,
-        database=args.database,
+        database=paths.database,
         staging=args.staging,
     )
 
@@ -135,7 +159,7 @@ def main() -> None:
         ORDER BY docs DESC, micro_cluster
         LIMIT {int(args.show_limit)}
         """,
-        database=args.database,
+        database=paths.database,
         staging=args.staging,
     )
 
@@ -157,7 +181,7 @@ def main() -> None:
         ORDER BY docs DESC, meso_cluster
         LIMIT {int(args.show_limit)}
         """,
-        database=args.database,
+        database=paths.database,
         staging=args.staging,
     )
 

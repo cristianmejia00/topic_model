@@ -47,9 +47,12 @@ Exception:
 
 `run_root_pipeline.py` requires:
 
-- `--database` (Glue/Athena database)
 - `--snapshot` (for S3 path template)
 - `--query` (for S3 path template)
+
+Glue/Athena database naming in step 05 is derived automatically as:
+
+- `snapshot_{SNAPSHOT}-{QUERY}`
 
 These are exported to scripts as environment variables:
 
@@ -74,14 +77,12 @@ source .venv/bin/activate
 
 # 1) Bootstrap Glue catalog over query outputs
 python create_glue_catalog.py \
-  --database q20260629 \
   --snapshot 2026-06-26 \
   --query q20260629 \
   --crawler-role AWSGlueServiceRole-openalex
 
 # 2) Optional migration for canonical source table
 python run_root_pipeline.py \
-  --database q20260629 \
   --snapshot 2026-06-26 \
   --query q20260629 \
   --version version3 \
@@ -89,7 +90,6 @@ python run_root_pipeline.py \
 
 # 3) Athena reports
 python run_root_pipeline.py \
-  --database q20260629 \
   --snapshot 2026-06-26 \
   --query q20260629 \
   --step athena_reports \
@@ -97,14 +97,12 @@ python run_root_pipeline.py \
 
 # 4) Audit
 python run_root_pipeline.py \
-  --database q20260629 \
   --snapshot 2026-06-26 \
   --query q20260629 \
   --step audit_hierarchy
 
 # 5) BERTopic
 python run_root_pipeline.py \
-  --database q20260629 \
   --snapshot 2026-06-26 \
   --query q20260629 \
   --step bertopic \
@@ -112,7 +110,6 @@ python run_root_pipeline.py \
 
 # 6) Optional macro assets
 python run_root_pipeline.py \
-  --database q20260629 \
   --snapshot 2026-06-26 \
   --query q20260629 \
   --step macro_colors \
