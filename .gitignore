@@ -74,6 +74,8 @@ celerybeat.pid
 # ── Data / model artefacts ────────────────────────────────────────────────────
 _bertopic_cache/
 _viz_cache/
+04-cluster_with_parallel_louvain/input/
+04-cluster_with_parallel_louvain/output/
 excel/
 utokyo/
 *.npy
