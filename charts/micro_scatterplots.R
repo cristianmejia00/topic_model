@@ -126,6 +126,35 @@ parse_optional_numeric_arg <- function(raw_value, arg_name) {
   value
 }
 
+format_bound_for_filename <- function(value) {
+  if (is.na(value)) {
+    return(NULL)
+  }
+  text <- format(value, trim = TRUE, scientific = FALSE)
+  # Keep filenames portable by avoiding punctuation that can be awkward in tooling.
+  text <- gsub("-", "neg", text, fixed = TRUE)
+  text <- gsub("\\.", "p", text)
+  text
+}
+
+build_output_suffix <- function(min_x = NA_real_, min_y = NA_real_) {
+  parts <- character(0)
+  min_x_token <- format_bound_for_filename(min_x)
+  min_y_token <- format_bound_for_filename(min_y)
+
+  if (!is.null(min_x_token) && nzchar(min_x_token)) {
+    parts <- c(parts, paste0("minx", min_x_token))
+  }
+  if (!is.null(min_y_token) && nzchar(min_y_token)) {
+    parts <- c(parts, paste0("miny", min_y_token))
+  }
+
+  if (length(parts) == 0) {
+    return("")
+  }
+  paste0("_", paste(parts, collapse = "_"))
+}
+
 build_cluster_code_fallback <- function(df) {
   required <- c("micro_cluster", "macro_cluster", "publications")
   missing <- required[!(required %in% names(df))]
@@ -359,6 +388,7 @@ main <- function() {
   min_size <- 50
   min_x <- parse_optional_numeric_arg(args[["min_x"]] %||% args[["min-x"]], "min_x")
   min_y <- parse_optional_numeric_arg(args[["min_y"]] %||% args[["min-y"]], "min_y")
+  output_suffix <- build_output_suffix(min_x = min_x, min_y = min_y)
 
   clustering_root <- sprintf(
     "s3://openalex-results/snapshot_%s/queries/%s/network/clustering/",
@@ -378,6 +408,7 @@ main <- function() {
   cat(sprintf("[config] min publications per micro: %s\n", min_size))
   cat(sprintf("[config] min_x: %s\n", ifelse(is.na(min_x), "none", format(min_x, trim = TRUE))))
   cat(sprintf("[config] min_y: %s\n", ifelse(is.na(min_y), "none", format(min_y, trim = TRUE))))
+  cat(sprintf("[config] output suffix: %s\n", ifelse(nzchar(output_suffix), output_suffix, "none")))
   cat(sprintf("[config] micro source: %s\n", micro_dir))
   cat(sprintf("[config] macro colors source: %s\n", macro_color_dir))
   cat(sprintf("[config] output charts dir: %s\n", charts_dir))
@@ -455,8 +486,8 @@ main <- function() {
     min_y = min_y
   )
 
-  out_ave <- join_s3(charts_dir, "fig_scatter_micro_PY_x_Z9.png")
-  out_rank <- join_s3(charts_dir, "fig_scatter_micro_PY_x_Z9_rank.png")
+  out_ave <- join_s3(charts_dir, paste0("fig_scatter_micro_PY_x_Z9", output_suffix, ".png"))
+  out_rank <- join_s3(charts_dir, paste0("fig_scatter_micro_PY_x_Z9_rank", output_suffix, ".png"))
 
   save_plot_to_s3(scatter_ave, out_ave, width = width, height = height, dpi = dpi, region = aws_region)
   save_plot_to_s3(scatter_rank, out_rank, width = width, height = height, dpi = dpi, region = aws_region)

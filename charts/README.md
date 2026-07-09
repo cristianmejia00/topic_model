@@ -79,6 +79,10 @@ Main steps:
 Outputs:
 - `.../subqueries/{SUBQUERY}/charts/fig_scatter_micro_PY_x_Z9.png`
 - `.../subqueries/{SUBQUERY}/charts/fig_scatter_micro_PY_x_Z9_rank.png`
+- If `--min_x` and/or `--min_y` are provided, output filenames include suffixes,
+  for example:
+  - `fig_scatter_micro_PY_x_Z9_minx2020_miny0p6.png`
+  - `fig_scatter_micro_PY_x_Z9_rank_minx2020_miny0p6.png`
 
 ## Prerequisites
 
