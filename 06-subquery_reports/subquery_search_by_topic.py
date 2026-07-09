@@ -158,6 +158,66 @@ def write(df: pd.DataFrame, name: str):
     print(f"[save] {name}: {len(df):,} rows -> {OUT_BASE}{name}/")
 
 
+def add_cluster_code(micro_rep: pd.DataFrame) -> pd.DataFrame:
+    required = {"micro_cluster", "macro_cluster", "publications"}
+    missing = sorted(c for c in required if c not in micro_rep.columns)
+    if missing:
+        raise KeyError(f"cluster_report_micro missing required columns for cluster_code: {missing}")
+
+    out = micro_rep.copy()
+    rank_base = out[["micro_cluster", "macro_cluster", "publications"]].copy()
+    rank_base["micro_cluster"] = pd.to_numeric(rank_base["micro_cluster"], errors="coerce")
+    rank_base["macro_cluster"] = pd.to_numeric(rank_base["macro_cluster"], errors="coerce")
+    rank_base["publications"] = pd.to_numeric(rank_base["publications"], errors="coerce")
+    rank_base = rank_base.dropna(subset=["micro_cluster", "macro_cluster"]).copy()
+
+    if rank_base.empty:
+        out["cluster_code"] = ""
+        return out
+
+    rank_base["micro_cluster"] = rank_base["micro_cluster"].astype("int64")
+    rank_base["macro_cluster"] = rank_base["macro_cluster"].astype("int64")
+    rank_base = (
+        rank_base.groupby(["micro_cluster", "macro_cluster"], as_index=False)["publications"]
+        .max()
+        .fillna({"publications": 0.0})
+    )
+
+    macro_rank = (
+        rank_base.groupby("macro_cluster", as_index=False)["publications"]
+        .sum()
+        .sort_values(["publications", "macro_cluster"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    macro_rank["macro_display_id"] = range(1, len(macro_rank) + 1)
+
+    micro_rank = rank_base.sort_values(
+        ["macro_cluster", "publications", "micro_cluster"],
+        ascending=[True, False, True],
+    ).copy()
+    micro_rank["micro_rank"] = micro_rank.groupby("macro_cluster").cumcount() + 1
+    cluster_map = micro_rank.merge(
+        macro_rank[["macro_cluster", "macro_display_id"]],
+        on="macro_cluster",
+        how="left",
+    )
+    cluster_map["cluster_code"] = (
+        cluster_map["macro_display_id"].astype("int64").astype(str)
+        + "-"
+        + cluster_map["micro_rank"].astype("int64").astype(str)
+    )
+
+    out["_micro_key"] = pd.to_numeric(out["micro_cluster"], errors="coerce")
+    out["_macro_key"] = pd.to_numeric(out["macro_cluster"], errors="coerce")
+    mapped = cluster_map.rename(
+        columns={"micro_cluster": "_micro_key", "macro_cluster": "_macro_key"}
+    )
+    out = out.merge(mapped[["_micro_key", "_macro_key", "cluster_code"]], on=["_micro_key", "_macro_key"], how="left")
+    out["cluster_code"] = out["cluster_code"].fillna("")
+    out = out.drop(columns=["_micro_key", "_macro_key"])
+    return out
+
+
 # ----------------------------------------------------------------------------
 # main
 # ----------------------------------------------------------------------------
@@ -207,6 +267,7 @@ def main():
     if micro_rep.empty:
         print(f"\n[stop] matches found, but none has >= {MIN_SIZE} papers.")
         sys.exit(0)
+    micro_rep = add_cluster_code(micro_rep)
 
     final_micro = micro_rep["micro_cluster"].astype("int64").tolist()
     meso_ids    = micro_rep["meso_cluster"].dropna().astype("int64").unique().tolist()

@@ -1,6 +1,8 @@
-# Charts Pipeline (Subquery Macro UMAP)
+# Charts Pipeline (Subquery Visuals)
 
-This folder contains the two scripts that generate the macro-level UMAP chart for a subquery.
+This folder contains three scripts:
+- two Python scripts for macro-level UMAP
+- one R script for micro-level scatter plots
 
 ## What Each Script Does
 
@@ -54,6 +56,30 @@ Subtitle in figure:
 Cache written by this script:
 - `.../subqueries/{SUBQUERY}/charts/enriched_embeds/umap_2d_coords.csv`
 
+### 3) `micro_scatterplots.R`
+
+Creates two micro-level scatter plots using `ggplot2` + `ggrepel`.
+
+Main steps:
+- Reads subquery micro report from:
+  - `.../subqueries/{SUBQUERY}/cluster_report_micro/`
+- Reads macro colors from:
+  - `.../cluster_color_macro/`
+- Ensures labels come from `cluster_code`.
+  - If `cluster_code` is absent or empty, computes fallback labels with the
+    same deterministic logic as step-06 subquery writers.
+- Uses point color inherited from parent macro (`color_hex`).
+- Uses point size from `publications`.
+- Applies a minimum publication threshold per micro cluster (`MIN_SIZE = 50`).
+- Builds two charts:
+  - x=`ave_py`, y=`ave_citations`
+  - x=`ave_py`, y=ranked normalized citations, with priority:
+    `yearly_rank_citations` -> `ranked_citation_score` -> `ranked_citation`
+
+Outputs:
+- `.../subqueries/{SUBQUERY}/charts/fig_scatter_micro_PY_x_Z9.png`
+- `.../subqueries/{SUBQUERY}/charts/fig_scatter_micro_PY_x_Z9_rank.png`
+
 ## Prerequisites
 
 - Python environment with dependencies from `requirements.txt`.
@@ -74,6 +100,13 @@ Run from repository root:
   --snapshot 2026-06-26 \
   --query planetary-health \
   --subquery everything
+
+Rscript charts/micro_scatterplots.R \
+  --snapshot 2026-06-26 \
+  --query planetary-health \
+  --subquery everything \
+  --min_x 2020 \
+  --min_y 0.6
 ```
 
 Or run from inside `charts/`:
@@ -81,6 +114,7 @@ Or run from inside `charts/`:
 ```bash
 python build_enriched_embeddings.py --snapshot 2026-06-26 --query planetary-health --subquery everything
 python umap_scatter.py --snapshot 2026-06-26 --query planetary-health --subquery everything
+Rscript micro_scatterplots.R --snapshot 2026-06-26 --query planetary-health --subquery everything
 ```
 
 ## Useful Options
@@ -99,6 +133,17 @@ python umap_scatter.py --snapshot 2026-06-26 --query planetary-health --subquery
 - `--title`: custom chart title
 - `--force`: recompute UMAP coordinates even if cache exists
 
+`micro_scatterplots.R`:
+- `--snapshot`: snapshot token
+- `--query`: query token
+- `--subquery`: subquery folder
+- `--aws-region`: AWS region for S3 operations (default: `AWS_REGION`/`AWS_DEFAULT_REGION`, fallback `ap-northeast-1`)
+- `--min_x` (or `--min-x`): optional lower bound for x-axis (`ave_py`)
+- `--min_y` (or `--min-y`): optional lower bound for y-axis (applied to each plot's y metric)
+- `--width`: output width in inches (default `12`)
+- `--height`: output height in inches (default `7`)
+- `--dpi`: output DPI (default `240`)
+
 ## Common Pitfalls
 
 - Use a normal double hyphen in CLI flags, for example `--subquery`.
@@ -107,3 +152,7 @@ python umap_scatter.py --snapshot 2026-06-26 --query planetary-health --subquery
   `build_enriched_embeddings.py`.
 - If the chart should be recomputed from scratch, pass `--force` to
   `umap_scatter.py` to ignore cached coordinates.
+- `micro_scatterplots.R` requires R packages: `aws.s3`, `arrow`, `dplyr`,
+  `ggplot2`, `ggrepel`.
+- If you see `PermanentRedirect` / `Moved Permanently (HTTP 301)` from S3,
+  run with `--aws-region ap-northeast-1` (or set `AWS_REGION` accordingly).
