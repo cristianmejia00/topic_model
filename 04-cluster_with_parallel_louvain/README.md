@@ -9,6 +9,7 @@ The supported workflow is notebook-first:
 1. `download_input.ipynb`
 2. `parallel_louvain.ipynb`
 3. `upload_outputs.ipynb`
+4. `clear_input_output_subfolders.ipynb` (optional maintenance utility)
 
 Step 04 now consumes the step-03 network exports directly and uses `SNAPSHOT` + `QUERY` as the configuration contract.
 
@@ -41,6 +42,14 @@ jupyter notebook download_input.ipynb
 jupyter notebook parallel_louvain.ipynb
 jupyter notebook upload_outputs.ipynb
 ```
+
+For local cleanup between runs:
+
+```bash
+jupyter notebook clear_input_output_subfolders.ipynb
+```
+
+Inside the cleanup notebook, run a dry-run first (`EXECUTE = False`), review the listed files/folders, then set `EXECUTE = True` only when you are ready to delete local contents under `input/` and/or `output/`.
 
 ## Notes on Performance
 
