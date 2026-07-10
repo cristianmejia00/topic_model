@@ -89,6 +89,12 @@ Full run:
 python 02-get_query_subset/run_query_subset.py --config 02-get_query_subset/config.yaml
 ```
 
+Full run with overwrite (drop existing `nodes_query`/`edges_query` and clear their output prefixes):
+
+```bash
+python 02-get_query_subset/run_query_subset.py --config 02-get_query_subset/config.yaml --overwrite
+```
+
 ## Important Note About Athena Console SQL
 
 Your SQL can stay the same if it is valid Athena SQL and references the correct source/dependency table names for this scripted flow.

@@ -7,6 +7,7 @@ This step converts OpenAlex works snapshot JSONL into Parquet datasets for downs
 - Production ETL script: `glue_jsonl_to_parquet_etl.py`
 - This folder intentionally does not track a notebook to avoid drift.
 - Production execution should use the script-based Glue job flow below.
+- ETL reconstructs plain `abstract` text from OpenAlex `abstract_inverted_index`.
 
 ## Files
 
@@ -20,8 +21,8 @@ This step converts OpenAlex works snapshot JSONL into Parquet datasets for downs
 - Output base template: `s3://openalex-results/snapshot_{SNAPSHOT_DATE}`
 - `SNAPSHOT_DATE` is read from `s3://openalex-works/snapshot/data/works/manifest.json` field `date`
 - Example resolved output base: `s3://openalex-results/snapshot_2026-06-26`
-- Nodes output: `s3://openalex-results/snapshot_2026-06-26/nodes_partitioned/`
-- Edges output: `s3://openalex-results/snapshot_2026-06-26/edges/`
+- Nodes output: `s3://openalex-results/snapshot_2026-06-26/nodes_snapshot/`
+- Edges output: `s3://openalex-results/snapshot_2026-06-26/edges_snapshot/`
 
 ## Deployment (Create or Update Glue Job)
 

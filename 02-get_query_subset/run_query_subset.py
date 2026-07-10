@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
+from botocore.exceptions import ClientError
 import yaml
 
 
@@ -49,6 +50,9 @@ class Settings:
     snapshot_root: str
     nodes_snapshot_path: str
     edges_snapshot_path: str
+    query_root: str
+    nodes_query_path: str
+    edges_query_path: str
     query_dir: Path
     nodes_sql_path: Path
     edges_sql_path: Path
@@ -74,6 +78,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="Polling interval for Athena query status.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "If set, drop existing nodes_query/edges_query tables and clear their "
+            "S3 output prefixes before running CTAS queries."
+        ),
     )
     return parser.parse_args()
 
@@ -124,6 +136,9 @@ def load_settings(config_path: Path, repo_dir: Path) -> Settings:
     snapshot_root = f"s3://openalex-results/snapshot_{snapshot}/"
     nodes_snapshot_path = f"{snapshot_root}nodes_snapshot/"
     edges_snapshot_path = f"{snapshot_root}edges_snapshot/"
+    query_root = f"{snapshot_root}queries/{query}/"
+    nodes_query_path = f"{query_root}nodes_query/"
+    edges_query_path = f"{query_root}edges_query/"
 
     query_dir = repo_dir / snapshot / query
     nodes_sql_path = query_dir / "nodes_query.sql"
@@ -140,10 +155,73 @@ def load_settings(config_path: Path, repo_dir: Path) -> Settings:
         snapshot_root=snapshot_root,
         nodes_snapshot_path=nodes_snapshot_path,
         edges_snapshot_path=edges_snapshot_path,
+        query_root=query_root,
+        nodes_query_path=nodes_query_path,
+        edges_query_path=edges_query_path,
         query_dir=query_dir,
         nodes_sql_path=nodes_sql_path,
         edges_sql_path=edges_sql_path,
     )
+
+
+def glue_table_exists(glue, *, database: str, table: str) -> bool:
+    try:
+        glue.get_table(DatabaseName=database, Name=table)
+        return True
+    except glue.exceptions.EntityNotFoundException:
+        return False
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in {"EntityNotFoundException", "TableNotFoundException"}:
+            return False
+        raise
+
+
+def delete_s3_prefix(s3, prefix_uri: str) -> int:
+    bucket, key_prefix = parse_s3_uri(normalize_s3_prefix(prefix_uri))
+    paginator = s3.get_paginator("list_objects_v2")
+    total_deleted = 0
+
+    for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
+        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if not keys:
+            continue
+        for i in range(0, len(keys), 1000):
+            chunk = keys[i : i + 1000]
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": chunk})
+            total_deleted += len(chunk)
+
+    return total_deleted
+
+
+def cleanup_existing_query_outputs(settings: Settings, athena, s3, poll_seconds: int) -> None:
+    # Drop downstream first due dependency on nodes_query.
+    drop_edges_sql = "DROP TABLE IF EXISTS edges_query"
+    qid = run_athena_query(
+        athena,
+        sql=drop_edges_sql,
+        staging=settings.athena_staging,
+        workgroup=settings.athena_workgroup,
+        database=settings.database,
+        poll_seconds=poll_seconds,
+    )
+    print(f"[ok] dropped table if exists {settings.database}.edges_query (query={qid})")
+
+    drop_nodes_sql = "DROP TABLE IF EXISTS nodes_query"
+    qid = run_athena_query(
+        athena,
+        sql=drop_nodes_sql,
+        staging=settings.athena_staging,
+        workgroup=settings.athena_workgroup,
+        database=settings.database,
+        poll_seconds=poll_seconds,
+    )
+    print(f"[ok] dropped table if exists {settings.database}.nodes_query (query={qid})")
+
+    edges_deleted = delete_s3_prefix(s3, settings.edges_query_path)
+    nodes_deleted = delete_s3_prefix(s3, settings.nodes_query_path)
+    print(f"[ok] cleared {settings.edges_query_path} objects={edges_deleted}")
+    print(f"[ok] cleared {settings.nodes_query_path} objects={nodes_deleted}")
 
 
 def validate_sql_dependencies(nodes_sql: str, edges_sql: str) -> None:
@@ -362,7 +440,25 @@ def main() -> None:
         return
 
     athena = boto3.client("athena")
+    glue = boto3.client("glue")
     ensure_catalog_sources(settings, athena, args.poll_seconds)
+
+    existing_targets = [
+        table
+        for table in ("nodes_query", "edges_query")
+        if glue_table_exists(glue, database=settings.database, table=table)
+    ]
+
+    if existing_targets and not args.overwrite:
+        existing_fmt = ", ".join(existing_targets)
+        raise RuntimeError(
+            "Destination table(s) already exist: "
+            f"{existing_fmt}. Rerun with --overwrite to drop existing tables and "
+            "clear query output prefixes before CTAS."
+        )
+
+    if args.overwrite:
+        cleanup_existing_query_outputs(settings, athena, s3, args.poll_seconds)
 
     qid = run_athena_query(
         athena,

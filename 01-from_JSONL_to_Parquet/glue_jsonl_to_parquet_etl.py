@@ -3,8 +3,8 @@
 Glue ETL job: parse OpenAlex works JSONL snapshot to curated Parquet outputs.
 
 Outputs:
-- {OUTPUT_PATH}/nodes_partitioned/  (partitioned by publication_year)
-- {OUTPUT_PATH}/edges/
+- {OUTPUT_PATH}/nodes_snapshot/  (partitioned by publication_year)
+- {OUTPUT_PATH}/edges_snapshot/
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from pyspark.sql.functions import (
     array_distinct,
     col,
     collect_list,
+    expr,
     explode,
     flatten,
     from_json,
@@ -29,7 +30,15 @@ from pyspark.sql.functions import (
     substring,
     transform,
 )
-from pyspark.sql.types import ArrayType, IntegerType, LongType, StringType, StructField, StructType
+from pyspark.sql.types import (
+    ArrayType,
+    IntegerType,
+    LongType,
+    MapType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 
 DEFAULT_INPUT_PATH = "s3://openalex-works/snapshot/data/works"
@@ -90,6 +99,7 @@ def build_work_schema() -> StructType:
             StructField("id", StringType()),
             StructField("doi", StringType()),
             StructField("title", StringType()),
+            StructField("abstract_inverted_index", MapType(StringType(), ArrayType(IntegerType()))),
             StructField("language", StringType()),
             StructField("type", StringType()),
             StructField("type_crossref", StringType()),
@@ -184,6 +194,32 @@ def main(argv: list[str]) -> None:
     base_nodes_df = (
         parsed_df.withColumn("temp_id", monotonically_increasing_id())
         .withColumn("id", substring(col("id"), prefix_len, args.SUBSTRING_LEN))
+        # OpenAlex stores abstract text as an inverted index map (token -> positions).
+        # Reconstruct a plain-text abstract by sorting tokens by position and joining with spaces.
+        .withColumn(
+            "abstract",
+            expr(
+                """
+                CASE
+                    WHEN abstract_inverted_index IS NULL THEN NULL
+                    ELSE array_join(
+                        transform(
+                            array_sort(
+                                flatten(
+                                    transform(
+                                        map_entries(abstract_inverted_index),
+                                        kv -> transform(kv.value, pos -> named_struct('pos', pos, 'token', kv.key))
+                                    )
+                                )
+                            ),
+                            x -> x.token
+                        ),
+                        ' '
+                    )
+                END
+                """
+            ),
+        )
         .withColumn("publication_source", col("primary_location.source.display_name"))
         .withColumn(
             "institutions",
@@ -220,6 +256,7 @@ def main(argv: list[str]) -> None:
         "id",
         "doi",
         "title",
+        "abstract",
         "language",
         col("type").alias("type_openalex"),
         "type_crossref",
