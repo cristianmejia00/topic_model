@@ -1,4 +1,4 @@
-"""Generate per-level Excel exports for a subquery result set.
+"""Generate per-level exports for a subquery result set.
 
 Outputs are written locally to:
     excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/{LEVEL}/
@@ -11,10 +11,10 @@ Files created in each level folder:
 2) cluster_profile.xlsx
     - Two sheets only: info and the level profile sheet.
     - Excludes display_id from the exported level sheet.
-3) countries_summary.xlsx
-   - Per-cluster country frequencies at that level.
-4) institutions_summary.xlsx
-   - Per-cluster institution frequencies at that level.
+3) countries_summary.csv
+    - Top-100 countries per cluster (by frequency) at that level.
+4) institutions_summary.csv
+    - Top-100 institutions per cluster (by frequency) at that level.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ import pycountry
 ROOT = Path(__file__).resolve().parent
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 ABSTRACTS_OPENALEX_API_FALLBACK = False
+TOP_ENTITY_ROWS_PER_CLUSTER = 100
 
 from common_config import (
     DEFAULT_STAGING,
@@ -43,7 +44,7 @@ from common_config import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate Excel exports for one subquery folder."
+        description="Generate subquery exports for one subquery folder."
     )
     parser.add_argument(
         "--snapshot",
@@ -663,21 +664,44 @@ def build_country_summary(
     workgroup: str,
     cluster_col: str,
     cluster_ids: list[int],
+    top_k: int = TOP_ENTITY_ROWS_PER_CLUSTER,
 ) -> pd.DataFrame:
     if cluster_col not in {"micro_cluster", "meso_cluster", "macro_cluster"}:
         raise ValueError(f"Unsupported cluster column: {cluster_col}")
 
     sql = f"""
+    WITH agg AS (
+        SELECT
+            {cluster_col} AS report_cluster,
+            country,
+            COUNT(*) AS freq,
+            ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
+            ROUND(AVG(citations), 2) AS avg_citation
+        FROM article_report
+        CROSS JOIN UNNEST(countries) AS t(country)
+        WHERE {cluster_col} IN ({in_clause(cluster_ids)})
+        GROUP BY {cluster_col}, country
+    ), ranked AS (
+        SELECT
+            report_cluster,
+            country,
+            freq,
+            avg_publication_year,
+            avg_citation,
+            ROW_NUMBER() OVER (
+                PARTITION BY report_cluster
+                ORDER BY freq DESC, country ASC
+            ) AS rn
+        FROM agg
+    )
     SELECT
-        {cluster_col} AS report_cluster,
+        report_cluster,
         country,
-        COUNT(*) AS freq,
-        ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
-        ROUND(AVG(citations), 2) AS avg_citation
-    FROM article_report
-    CROSS JOIN UNNEST(countries) AS t(country)
-    WHERE {cluster_col} IN ({in_clause(cluster_ids)})
-    GROUP BY {cluster_col}, country
+        freq,
+        avg_publication_year,
+        avg_citation
+    FROM ranked
+    WHERE rn <= {int(top_k)}
     """
     out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
     out["report_cluster"] = pd.to_numeric(out["report_cluster"], errors="coerce")
@@ -696,21 +720,44 @@ def build_institution_summary(
     workgroup: str,
     cluster_col: str,
     cluster_ids: list[int],
+    top_k: int = TOP_ENTITY_ROWS_PER_CLUSTER,
 ) -> pd.DataFrame:
     if cluster_col not in {"micro_cluster", "meso_cluster", "macro_cluster"}:
         raise ValueError(f"Unsupported cluster column: {cluster_col}")
 
     sql = f"""
+    WITH agg AS (
+        SELECT
+            {cluster_col} AS report_cluster,
+            institution,
+            COUNT(*) AS freq,
+            ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
+            ROUND(AVG(citations), 2) AS avg_citation
+        FROM article_report
+        CROSS JOIN UNNEST(institutions) AS t(institution)
+        WHERE {cluster_col} IN ({in_clause(cluster_ids)})
+        GROUP BY {cluster_col}, institution
+    ), ranked AS (
+        SELECT
+            report_cluster,
+            institution,
+            freq,
+            avg_publication_year,
+            avg_citation,
+            ROW_NUMBER() OVER (
+                PARTITION BY report_cluster
+                ORDER BY freq DESC, institution ASC
+            ) AS rn
+        FROM agg
+    )
     SELECT
-        {cluster_col} AS report_cluster,
+        report_cluster,
         institution,
-        COUNT(*) AS freq,
-        ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
-        ROUND(AVG(citations), 2) AS avg_citation
-    FROM article_report
-    CROSS JOIN UNNEST(institutions) AS t(institution)
-    WHERE {cluster_col} IN ({in_clause(cluster_ids)})
-    GROUP BY {cluster_col}, institution
+        freq,
+        avg_publication_year,
+        avg_citation
+    FROM ranked
+    WHERE rn <= {int(top_k)}
     """
     out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
     out["report_cluster"] = pd.to_numeric(out["report_cluster"], errors="coerce")
@@ -755,21 +802,52 @@ def attach_cluster_code_and_sort(
 
 
 def write_excel(path: Path, sheets: dict[str, pd.DataFrame]) -> None:
+    # Excel worksheet row limit is 1,048,576 including header row.
+    # Keep one row for headers and split oversized tables across part sheets.
+    max_data_rows = 1_048_575
+
+    def _iter_sheet_parts(sheet_name: str, df: pd.DataFrame):
+        total_rows = len(df)
+        if total_rows <= max_data_rows:
+            yield sheet_name, df
+            return
+
+        part_idx = 1
+        start = 0
+        while start < total_rows:
+            end = min(start + max_data_rows, total_rows)
+            suffix = f"_p{part_idx:02d}"
+            base_len = max(1, 31 - len(suffix))
+            part_name = f"{sheet_name[:base_len]}{suffix}"
+            yield part_name, df.iloc[start:end].copy()
+            part_idx += 1
+            start = end
+
     try:
         with pd.ExcelWriter(path, engine="openpyxl") as writer:
             for sheet_name, df in sheets.items():
-                safe_df = df.copy()
-                object_cols = safe_df.select_dtypes(include=["object", "string"]).columns
-                for col in object_cols:
-                    safe_df[col] = safe_df[col].map(sanitize_excel_text)
-                safe_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                ws = writer.sheets[sheet_name]
-                ws.freeze_panes = "A2"
-                ws.auto_filter.ref = ws.dimensions
+                for part_sheet_name, part_df in _iter_sheet_parts(sheet_name, df):
+                    safe_df = part_df.copy()
+                    object_cols = safe_df.select_dtypes(include=["object", "string"]).columns
+                    for col in object_cols:
+                        safe_df[col] = safe_df[col].map(sanitize_excel_text)
+
+                    safe_df.to_excel(writer, sheet_name=part_sheet_name, index=False)
+                    ws = writer.sheets[part_sheet_name]
+                    ws.freeze_panes = "A2"
+                    ws.auto_filter.ref = ws.dimensions
     except ImportError as exc:
         raise RuntimeError(
             "openpyxl is required to write .xlsx files. Install openpyxl and rerun."
         ) from exc
+
+
+def write_csv(path: Path, df: pd.DataFrame) -> None:
+    safe_df = df.copy()
+    object_cols = safe_df.select_dtypes(include=["object", "string"]).columns
+    for col in object_cols:
+        safe_df[col] = safe_df[col].map(sanitize_excel_text)
+    safe_df.to_csv(path, index=False)
 
 
 def build_level_info_sheet(
@@ -816,6 +894,7 @@ def main() -> None:
     print("[config] output_root:", output_root)
     print("[config] staging:", args.staging)
     print("[config] workgroup:", args.workgroup)
+    print("[config] top countries/institutions per cluster:", TOP_ENTITY_ROWS_PER_CLUSTER)
     print("[config] abstracts_openalex_api_fallback:", args.abstracts_openalex_api_fallback)
 
     micro_rep = read_subset(out_base, "cluster_report_micro", required=True)
@@ -961,6 +1040,7 @@ def main() -> None:
             workgroup=args.workgroup,
             cluster_col=cluster_col,
             cluster_ids=cluster_ids,
+            top_k=TOP_ENTITY_ROWS_PER_CLUSTER,
         )
         institutions_df = build_institution_summary(
             database=database,
@@ -968,6 +1048,7 @@ def main() -> None:
             workgroup=args.workgroup,
             cluster_col=cluster_col,
             cluster_ids=cluster_ids,
+            top_k=TOP_ENTITY_ROWS_PER_CLUSTER,
         )
 
         key_series = pd.to_numeric(level_sheet[id_col], errors="coerce")
@@ -1008,13 +1089,13 @@ def main() -> None:
 
         article_path = level_dir / "article_report_top20.xlsx"
         cluster_path = level_dir / "cluster_profile.xlsx"
-        countries_path = level_dir / "countries_summary.xlsx"
-        institutions_path = level_dir / "institutions_summary.xlsx"
+        countries_path = level_dir / "countries_summary.csv"
+        institutions_path = level_dir / "institutions_summary.csv"
 
         write_excel(article_path, {"article_report": article_df})
         write_excel(cluster_path, {"info": info_sheet, sheet_name: profile_sheet})
-        write_excel(countries_path, {"countries": countries_df})
-        write_excel(institutions_path, {"institutions": institutions_df})
+        write_csv(countries_path, countries_df)
+        write_csv(institutions_path, institutions_df)
 
         print(
             f"[done] level={level} rows: article={len(article_df)} "

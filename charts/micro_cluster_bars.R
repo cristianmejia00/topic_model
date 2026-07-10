@@ -38,6 +38,15 @@ parse_cli_args <- function(args) {
   out
 }
 
+get_script_dir <- function() {
+  all_args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- all_args[grepl("^--file=", all_args)]
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[[1]]))))
+  }
+  getwd()
+}
+
 parse_s3_uri <- function(uri) {
   if (!startsWith(uri, "s3://")) {
     stop(sprintf("Expected s3:// URI, got: %s", uri), call. = FALSE)
@@ -91,7 +100,7 @@ read_s3_parquet_dataset <- function(dir_uri, region = NULL, required = TRUE) {
   }
 
   parts <- lapply(parquet_keys, function(obj_key) {
-    tmp_parquet <- tempfile(pattern = "micro_bar_part_", fileext = ".parquet")
+    tmp_parquet <- tempfile(pattern = "level_bar_part_", fileext = ".parquet")
     on.exit(unlink(tmp_parquet), add = TRUE)
 
     save_args <- list(object = obj_key, bucket = parsed$bucket, file = tmp_parquet)
@@ -120,6 +129,29 @@ pick_col <- function(df, candidates, required = FALSE) {
   NULL
 }
 
+safe_trim <- function(x) {
+  out <- trimws(as.character(x))
+  out[is.na(out)] <- ""
+  out
+}
+
+truncate_text <- function(x, max_chars = 64) {
+  sapply(
+    x,
+    function(item) {
+      txt <- as.character(item)
+      if (is.na(txt) || !nzchar(txt)) {
+        return("")
+      }
+      if (nchar(txt) <= max_chars) {
+        return(txt)
+      }
+      paste0(substr(txt, 1, max_chars - 1), "...")
+    },
+    USE.NAMES = FALSE
+  )
+}
+
 parse_positive_int <- function(raw_value, arg_name, default_value) {
   if (is.null(raw_value) || !nzchar(trimws(as.character(raw_value)))) {
     return(as.integer(default_value))
@@ -128,7 +160,7 @@ parse_positive_int <- function(raw_value, arg_name, default_value) {
   if (is.na(value) || value <= 0) {
     stop(sprintf("Invalid positive integer for --%s: %s", arg_name, as.character(raw_value)), call. = FALSE)
   }
-  as.integer(value)
+  value
 }
 
 parse_positive_numeric <- function(raw_value, arg_name, default_value) {
@@ -139,17 +171,35 @@ parse_positive_numeric <- function(raw_value, arg_name, default_value) {
   if (is.na(value) || value <= 0) {
     stop(sprintf("Invalid positive number for --%s: %s", arg_name, as.character(raw_value)), call. = FALSE)
   }
-  as.numeric(value)
+  value
 }
 
-build_cluster_code_fallback <- function(df) {
+parse_levels <- function(raw_level) {
+  valid <- c("macro", "meso", "micro")
+  if (is.null(raw_level) || !nzchar(trimws(as.character(raw_level)))) {
+    return(valid)
+  }
+
+  tokens <- unlist(strsplit(raw_level, ",", fixed = TRUE), use.names = FALSE)
+  tokens <- trimws(tolower(tokens))
+  tokens <- tokens[tokens != ""]
+  if (length(tokens) == 0) {
+    return(valid)
+  }
+
+  bad <- tokens[!(tokens %in% valid)]
+  if (length(bad) > 0) {
+    stop(sprintf("Invalid --level value(s): %s", paste(unique(bad), collapse = ", ")), call. = FALSE)
+  }
+
+  unique(tokens)
+}
+
+build_cluster_code_fallback_micro <- function(df) {
   required <- c("micro_cluster", "macro_cluster", "publications")
   missing <- required[!(required %in% names(df))]
   if (length(missing) > 0) {
-    stop(
-      sprintf("cluster_report_micro is missing required columns for fallback cluster_code: %s", paste(missing, collapse = ", ")),
-      call. = FALSE
-    )
+    return(rep("", nrow(df)))
   }
 
   rank_base <- df %>%
@@ -191,50 +241,26 @@ build_cluster_code_fallback <- function(df) {
       macro_cluster_num = suppressWarnings(as.integer(macro_cluster))
     ) %>%
     left_join(
-      micro_rank,
+      micro_rank %>% rename(fallback_cluster_code = cluster_code),
       by = c("micro_cluster_num" = "micro_cluster", "macro_cluster_num" = "macro_cluster")
     )
 
-  out$cluster_code <- ifelse(is.na(out$cluster_code), "", as.character(out$cluster_code))
-  out$cluster_code
-}
-
-ensure_cluster_code <- function(df) {
-  fallback <- build_cluster_code_fallback(df)
-  if (!("cluster_code" %in% names(df))) {
-    df$cluster_code <- fallback
-    return(df)
-  }
-
-  existing <- trimws(as.character(df$cluster_code))
-  valid_nonzero <- grepl("^[1-9][0-9]*-[1-9][0-9]*$", existing)
-  needs_fill <- is.na(existing) | existing == "" | !valid_nonzero
-  existing[needs_fill] <- fallback[needs_fill]
-  df$cluster_code <- existing
-  df
-}
-
-safe_trim <- function(x) {
-  out <- trimws(as.character(x))
-  out[is.na(out)] <- ""
-  out
-}
-
-truncate_text <- function(x, max_chars = 64) {
-  sapply(
-    x,
-    function(item) {
-      txt <- as.character(item)
-      if (is.na(txt) || !nzchar(txt)) {
-        return("")
-      }
-      if (nchar(txt) <= max_chars) {
-        return(txt)
-      }
-      paste0(substr(txt, 1, max_chars - 1), "...")
-    },
-    USE.NAMES = FALSE
+  out$fallback_cluster_code <- ifelse(
+    is.na(out$fallback_cluster_code),
+    "",
+    as.character(out$fallback_cluster_code)
   )
+  out$fallback_cluster_code
+}
+
+ensure_micro_cluster_code <- function(df) {
+  fallback <- build_cluster_code_fallback_micro(df)
+  existing <- if ("cluster_code" %in% names(df)) safe_trim(df$cluster_code) else rep("", nrow(df))
+  valid <- grepl("^[1-9][0-9]*-[1-9][0-9]*$", existing)
+  needs_fill <- existing == "" | !valid
+  existing[needs_fill] <- fallback[needs_fill]
+  existing[is.na(existing)] <- ""
+  existing
 }
 
 panel_label_from_id <- function(panel_id, macros_per_panel, max_macro_display_id) {
@@ -243,12 +269,11 @@ panel_label_from_id <- function(panel_id, macros_per_panel, max_macro_display_id
   sprintf("Panel %02d (Macro %d-%d)", panel_id, start_id, end_id)
 }
 
-save_plot_to_s3 <- function(plot_obj, output_uri, width, height, dpi, region = NULL) {
-  tmp_png <- tempfile(pattern = "micro_bars_", fileext = ".png")
-  on.exit(unlink(tmp_png), add = TRUE)
+save_plot_dual <- function(plot_obj, s3_uri, local_path, width, height, dpi, region = NULL) {
+  dir.create(dirname(local_path), recursive = TRUE, showWarnings = FALSE)
 
   ggsave(
-    filename = tmp_png,
+    filename = local_path,
     plot = plot_obj,
     width = width,
     height = height,
@@ -257,15 +282,184 @@ save_plot_to_s3 <- function(plot_obj, output_uri, width, height, dpi, region = N
     bg = "white"
   )
 
-  parsed <- parse_s3_uri(output_uri)
-  put_args <- list(file = tmp_png, object = parsed$key, bucket = parsed$bucket)
+  parsed <- parse_s3_uri(s3_uri)
+  put_args <- list(file = local_path, object = parsed$key, bucket = parsed$bucket)
   if (!is.null(region) && nzchar(trimws(region))) {
     put_args$region <- region
   }
   ok <- do.call(put_object, put_args)
   if (!isTRUE(ok)) {
-    stop(sprintf("Failed to upload image to %s", output_uri), call. = FALSE)
+    stop(sprintf("Failed to upload image to %s", s3_uri), call. = FALSE)
   }
+}
+
+prepare_level_bar_data <- function(level, report_df, colors_df, names_df, min_size, top_per_parent) {
+  id_candidates <- switch(
+    level,
+    macro = c("macro_cluster", "cluster"),
+    meso = c("meso_cluster", "cluster"),
+    micro = c("micro_cluster", "cluster")
+  )
+  id_col <- pick_col(report_df, id_candidates, required = TRUE)
+
+  if (!("publications" %in% names(report_df))) {
+    stop(sprintf("cluster_report_%s missing required column: publications", level), call. = FALSE)
+  }
+
+  name_col <- pick_col(report_df, c("short_name", "name", "cluster_name"), required = FALSE)
+
+  df <- report_df %>%
+    mutate(
+      cluster_id = suppressWarnings(as.integer(.data[[id_col]])),
+      publications = suppressWarnings(as.numeric(publications)),
+      macro_parent = if ("macro_cluster" %in% names(report_df)) suppressWarnings(as.integer(macro_cluster)) else NA_integer_,
+      short_name = if (!is.null(name_col)) safe_trim(.data[[name_col]]) else "",
+      cluster_code = if ("cluster_code" %in% names(report_df)) safe_trim(cluster_code) else ""
+    ) %>%
+    filter(!is.na(cluster_id), !is.na(publications)) %>%
+    mutate(publications = pmax(publications, 0)) %>%
+    filter(publications >= min_size)
+
+  if (nrow(df) == 0) {
+    return(data.frame())
+  }
+
+  if (level == "macro") {
+    df$macro_parent <- df$cluster_id
+  } else {
+    df$macro_parent[is.na(df$macro_parent)] <- df$cluster_id[is.na(df$macro_parent)]
+  }
+
+  df <- df %>% arrange(cluster_id, desc(publications)) %>% distinct(cluster_id, .keep_all = TRUE)
+
+  if (level == "micro" && nrow(names_df) > 0 && ("micro_cluster" %in% names(names_df))) {
+    names_col <- pick_col(names_df, c("short_name", "name", "cluster_name"), required = FALSE)
+    if (!is.null(names_col)) {
+      names_clean <- names_df %>%
+        transmute(
+          micro_cluster = suppressWarnings(as.integer(micro_cluster)),
+          short_name_named = safe_trim(.data[[names_col]])
+        ) %>%
+        filter(!is.na(micro_cluster), short_name_named != "") %>%
+        distinct(micro_cluster, .keep_all = TRUE)
+
+      df <- df %>%
+        left_join(names_clean, by = c("cluster_id" = "micro_cluster")) %>%
+        mutate(short_name = ifelse(short_name == "" & !is.na(short_name_named), short_name_named, short_name)) %>%
+        select(-any_of("short_name_named"))
+    }
+  }
+
+  if (level == "micro") {
+    tmp_micro <- df %>%
+      transmute(
+        micro_cluster = cluster_id,
+        macro_cluster = macro_parent,
+        publications = publications,
+        cluster_code = cluster_code
+      )
+    df$cluster_code <- ensure_micro_cluster_code(tmp_micro)
+    df$cluster_code[df$cluster_code == ""] <- as.character(df$cluster_id[df$cluster_code == ""])
+  } else {
+    df <- df %>%
+      arrange(desc(publications), cluster_id) %>%
+      mutate(display_id = row_number(), cluster_code = as.character(display_id))
+  }
+
+  macro_rank <- df %>%
+    group_by(macro_parent) %>%
+    summarise(macro_publications = sum(publications, na.rm = TRUE), .groups = "drop") %>%
+    arrange(desc(macro_publications), macro_parent) %>%
+    mutate(macro_display_id = row_number())
+
+  color_map <- colors_df %>%
+    transmute(
+      macro_cluster = suppressWarnings(as.integer(macro_cluster)),
+      color_hex = safe_trim(color_hex)
+    ) %>%
+    filter(!is.na(macro_cluster), color_hex != "") %>%
+    distinct(macro_cluster, .keep_all = TRUE)
+
+  out <- df %>%
+    left_join(macro_rank, by = c("macro_parent" = "macro_parent")) %>%
+    left_join(color_map, by = c("macro_parent" = "macro_cluster")) %>%
+    mutate(
+      macro_display_id = ifelse(is.na(macro_display_id), 0L, macro_display_id),
+      color_hex = ifelse(is.na(color_hex) | color_hex == "", "#bfbfbf", color_hex),
+      short_name = safe_trim(short_name),
+      label_text = ifelse(short_name == "", cluster_code, paste0(cluster_code, ". ", short_name)),
+      label_text = truncate_text(label_text, max_chars = 64)
+    )
+
+  if (level %in% c("meso", "micro")) {
+    out <- out %>%
+      arrange(macro_display_id, desc(publications), cluster_id) %>%
+      group_by(macro_display_id) %>%
+      slice_head(n = top_per_parent) %>%
+      ungroup()
+  }
+
+  out
+}
+
+build_bar_plot <- function(plot_df, level, min_size, top_per_parent, macros_per_panel) {
+  max_macro_display <- max(plot_df$macro_display_id, na.rm = TRUE)
+  panel_summary <- plot_df %>%
+    distinct(macro_display_id) %>%
+    arrange(macro_display_id) %>%
+    mutate(panel_id = ((macro_display_id - 1L) %/% macros_per_panel) + 1L) %>%
+    distinct(panel_id) %>%
+    arrange(panel_id) %>%
+    mutate(panel_label = sapply(panel_id, panel_label_from_id, macros_per_panel = macros_per_panel, max_macro_display_id = max_macro_display))
+
+  plot_df <- plot_df %>%
+    mutate(panel_id = ((macro_display_id - 1L) %/% macros_per_panel) + 1L) %>%
+    left_join(panel_summary, by = "panel_id") %>%
+    mutate(y_key = paste0("P", panel_id, "__", label_text))
+
+  desired_order <- plot_df %>%
+    arrange(panel_id, macro_display_id, desc(publications), cluster_id) %>%
+    pull(y_key)
+  plot_df$y_key <- factor(plot_df$y_key, levels = rev(unique(desired_order)))
+
+  panel_count <- max(plot_df$panel_id, na.rm = TRUE)
+  panel_cols <- max(1L, ceiling(sqrt(panel_count)))
+
+  fill_map <- plot_df %>%
+    distinct(macro_display_id, color_hex) %>%
+    arrange(macro_display_id)
+  palette <- setNames(fill_map$color_hex, as.character(fill_map$macro_display_id))
+
+  subtitle <- if (level == "macro") {
+    sprintf("Filtered: publications >= %d", min_size)
+  } else {
+    sprintf("Filtered: publications >= %d; max %d clusters per macro", min_size, top_per_parent)
+  }
+
+  plt <- ggplot(plot_df, aes(x = publications, y = y_key)) +
+    geom_col(aes(fill = factor(macro_display_id)), width = 0.62, alpha = 0.95) +
+    scale_fill_manual(values = palette, name = "Macro") +
+    scale_x_sqrt(labels = scales::label_number(big.mark = ",", accuracy = 1)) +
+    scale_y_discrete(labels = function(x) sub("^P[0-9]+__", "", x)) +
+    facet_wrap(~panel_label, scales = "free_y", ncol = panel_cols) +
+    labs(
+      title = sprintf("%s Clusters: Documents per Cluster", tools::toTitleCase(level)),
+      subtitle = subtitle,
+      x = "Number of documents (sqrt scale)",
+      y = sprintf("%s cluster", level)
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_blank(),
+      axis.text.y = element_text(size = 6.6),
+      strip.text = element_text(face = "bold", size = 10),
+      legend.position = "none",
+      plot.title = element_text(face = "bold", size = 16),
+      plot.subtitle = element_text(size = 10)
+    )
+
+  list(plot = plt, panel_cols = panel_cols, panel_count = panel_count)
 }
 
 main <- function() {
@@ -286,6 +480,8 @@ main <- function() {
     stop("Missing subquery. Provide --subquery or TOPIC_MODEL_SUBQUERY.", call. = FALSE)
   }
 
+  levels <- parse_levels(args[["level"]])
+
   aws_region <- args[["aws-region"]] %||%
     Sys.getenv("AWS_REGION") %||%
     Sys.getenv("AWS_DEFAULT_REGION") %||%
@@ -297,12 +493,14 @@ main <- function() {
   Sys.setenv(AWS_REGION = aws_region, AWS_DEFAULT_REGION = aws_region)
 
   min_size <- parse_positive_int(args[["min-size"]] %||% args[["min_size"]], "min-size", 50)
-  top_per_macro <- parse_positive_int(args[["top-per-macro"]] %||% args[["top_per_macro"]], "top-per-macro", 10)
+  top_per_parent <- parse_positive_int(args[["top-per-parent"]] %||% args[["top_per_parent"]] %||% args[["top-per-macro"]] %||% args[["top_per_macro"]], "top-per-parent", 10)
   macros_per_panel <- parse_positive_int(args[["macros-per-panel"]] %||% args[["macros_per_panel"]], "macros-per-panel", 6)
-
   panel_width <- parse_positive_numeric(args[["panel-width"]] %||% args[["panel_width"]], "panel-width", 8)
   panel_height <- parse_positive_numeric(args[["panel-height"]] %||% args[["panel_height"]], "panel-height", 6)
   dpi <- parse_positive_numeric(args[["dpi"]], "dpi", 240)
+
+  script_dir <- get_script_dir()
+  repo_root <- normalizePath(file.path(script_dir, ".."), winslash = "/", mustWork = FALSE)
 
   clustering_root <- sprintf(
     "s3://openalex-results/snapshot_%s/queries/%s/network/clustering/",
@@ -311,190 +509,95 @@ main <- function() {
   )
   subquery_root <- sprintf("%ssubqueries/%s/", clustering_root, subquery)
 
-  micro_dir <- paste0(subquery_root, "cluster_report_micro/")
+  colors_dir <- paste0(clustering_root, "cluster_color_macro/")
   names_dir <- paste0(subquery_root, "cluster_names/")
-  macro_color_dir <- paste0(clustering_root, "cluster_color_macro/")
-  charts_dir <- paste0(subquery_root, "charts/")
+
+  local_root <- file.path(
+    repo_root,
+    "06-subquery_reports",
+    "excel",
+    sprintf("snapshot_%s_%s", snapshot, query),
+    subquery
+  )
 
   cat(sprintf("[config] snapshot: %s\n", snapshot))
   cat(sprintf("[config] query: %s\n", query))
   cat(sprintf("[config] subquery: %s\n", subquery))
+  cat(sprintf("[config] levels: %s\n", paste(levels, collapse = ", ")))
   cat(sprintf("[config] aws region: %s\n", aws_region))
-  cat(sprintf("[config] min publications per micro: %d\n", min_size))
-  cat(sprintf("[config] top micro per macro: %d\n", top_per_macro))
+  cat(sprintf("[config] min publications: %d\n", min_size))
+  cat(sprintf("[config] top per macro-parent: %d\n", top_per_parent))
   cat(sprintf("[config] macros per panel: %d\n", macros_per_panel))
-  cat(sprintf("[config] panel width (in): %.2f\n", panel_width))
-  cat(sprintf("[config] panel height (in): %.2f\n", panel_height))
-  cat(sprintf("[config] micro source: %s\n", micro_dir))
-  cat(sprintf("[config] names source (optional): %s\n", names_dir))
-  cat(sprintf("[config] macro colors source: %s\n", macro_color_dir))
-  cat(sprintf("[config] output charts dir: %s\n", charts_dir))
+  cat(sprintf("[config] local output root: %s\n", local_root))
 
-  micro <- read_s3_parquet_dataset(micro_dir, region = aws_region, required = TRUE)
+  colors <- read_s3_parquet_dataset(colors_dir, region = aws_region, required = TRUE)
+  if (!("macro_cluster" %in% names(colors)) || !("color_hex" %in% names(colors))) {
+    stop("cluster_color_macro must contain columns: macro_cluster, color_hex", call. = FALSE)
+  }
+
   names_df <- read_s3_parquet_dataset(names_dir, region = aws_region, required = FALSE)
-  colors <- read_s3_parquet_dataset(macro_color_dir, region = aws_region, required = TRUE)
 
-  required_micro <- c("micro_cluster", "macro_cluster", "publications")
-  missing_micro <- required_micro[!(required_micro %in% names(micro))]
-  if (length(missing_micro) > 0) {
-    stop(
-      sprintf("cluster_report_micro missing required columns: %s", paste(missing_micro, collapse = ", ")),
-      call. = FALSE
+  for (level in levels) {
+    level_report_dir <- paste0(subquery_root, "cluster_report_", level, "/")
+    level_s3_dir <- paste0(subquery_root, "charts/", level, "/")
+    level_local_dir <- file.path(local_root, level)
+
+    cat(sprintf("[level:%s] source: %s\n", level, level_report_dir))
+    cat(sprintf("[level:%s] s3 output dir: %s\n", level, level_s3_dir))
+    cat(sprintf("[level:%s] local output dir: %s\n", level, level_local_dir))
+
+    report_df <- read_s3_parquet_dataset(level_report_dir, region = aws_region, required = TRUE)
+    plot_df <- prepare_level_bar_data(
+      level,
+      report_df,
+      colors,
+      names_df,
+      min_size = min_size,
+      top_per_parent = top_per_parent
     )
-  }
 
-  micro <- micro %>%
-    mutate(
-      micro_cluster = suppressWarnings(as.integer(micro_cluster)),
-      macro_cluster = suppressWarnings(as.integer(macro_cluster)),
-      publications = suppressWarnings(as.numeric(publications))
-    ) %>%
-    filter(!is.na(micro_cluster), !is.na(macro_cluster), !is.na(publications)) %>%
-    mutate(publications = pmax(publications, 0))
-
-  micro <- ensure_cluster_code(micro)
-  micro$cluster_code <- safe_trim(micro$cluster_code)
-
-  filtered <- micro %>%
-    filter(publications >= min_size)
-
-  if (nrow(filtered) == 0) {
-    stop("No rows remain after minimum publications filter.", call. = FALSE)
-  }
-
-  macro_rank <- filtered %>%
-    group_by(macro_cluster) %>%
-    summarise(macro_publications = sum(publications, na.rm = TRUE), .groups = "drop") %>%
-    arrange(desc(macro_publications), macro_cluster) %>%
-    mutate(macro_display_id = row_number())
-
-  filtered <- filtered %>%
-    left_join(macro_rank, by = "macro_cluster") %>%
-    arrange(macro_display_id, desc(publications), micro_cluster) %>%
-    group_by(macro_display_id) %>%
-    mutate(micro_rank = row_number()) %>%
-    ungroup() %>%
-    mutate(cluster_code = paste0(macro_display_id, "-", micro_rank))
-
-  selected <- filtered %>%
-    arrange(macro_display_id, desc(publications), micro_cluster) %>%
-    group_by(macro_display_id) %>%
-    slice_head(n = top_per_macro) %>%
-    ungroup()
-
-  if (nrow(selected) == 0) {
-    stop("No rows remain after top-per-macro selection.", call. = FALSE)
-  }
-
-  names_clean <- data.frame()
-  if (nrow(names_df) > 0 && ("micro_cluster" %in% names(names_df))) {
-    name_col <- pick_col(names_df, c("short_name", "name", "cluster_name"), required = FALSE)
-    if (!is.null(name_col)) {
-      names_clean <- names_df %>%
-        transmute(
-          micro_cluster = suppressWarnings(as.integer(micro_cluster)),
-          short_name = safe_trim(.data[[name_col]])
-        ) %>%
-        filter(!is.na(micro_cluster), short_name != "") %>%
-        distinct(micro_cluster, .keep_all = TRUE)
+    if (nrow(plot_df) == 0) {
+      cat(sprintf("[level:%s] skipped (no rows after filters)\n", level))
+      next
     }
-  }
 
-  colors_clean <- colors %>%
-    transmute(
-      macro_cluster = suppressWarnings(as.integer(macro_cluster)),
-      color_hex = safe_trim(color_hex)
-    ) %>%
-    filter(!is.na(macro_cluster), color_hex != "") %>%
-    distinct(macro_cluster, .keep_all = TRUE)
-
-  plot_df <- selected %>%
-    left_join(names_clean, by = "micro_cluster") %>%
-    left_join(colors_clean, by = "macro_cluster") %>%
-    mutate(
-      short_name = safe_trim(short_name),
-      color_hex = ifelse(is.na(color_hex) | color_hex == "", "#bfbfbf", color_hex),
-      label_text = ifelse(short_name == "", cluster_code, paste0(cluster_code, ". ", short_name)),
-      label_text = truncate_text(label_text, max_chars = 64),
-      panel_id = ((macro_display_id - 1L) %/% macros_per_panel) + 1L
+    built <- build_bar_plot(
+      plot_df,
+      level = level,
+      min_size = min_size,
+      top_per_parent = top_per_parent,
+      macros_per_panel = macros_per_panel
     )
 
-  if (nrow(plot_df) == 0) {
-    stop("No rows remain after joining names/colors.", call. = FALSE)
-  }
+    panel_rows <- max(1L, ceiling(built$panel_count / built$panel_cols))
+    width <- built$panel_cols * panel_width
+    height <- panel_rows * panel_height
 
-  max_macro_display <- max(plot_df$macro_display_id, na.rm = TRUE)
-  panel_summary <- plot_df %>%
-    distinct(panel_id) %>%
-    arrange(panel_id) %>%
-    mutate(panel_label = sapply(panel_id, panel_label_from_id, macros_per_panel = macros_per_panel, max_macro_display_id = max_macro_display))
-
-  plot_df <- plot_df %>%
-    left_join(panel_summary, by = "panel_id") %>%
-    mutate(y_key = paste0("P", panel_id, "__", label_text))
-
-  desired_order <- plot_df %>%
-    arrange(panel_id, macro_display_id, desc(publications), micro_cluster) %>%
-    pull(y_key)
-  plot_df$y_key <- factor(plot_df$y_key, levels = rev(unique(desired_order)))
-
-  panel_count <- max(plot_df$panel_id, na.rm = TRUE)
-  panel_cols <- max(1L, ceiling(sqrt(panel_count)))
-  panel_rows <- max(1L, ceiling(panel_count / panel_cols))
-
-  fill_map <- plot_df %>%
-    distinct(macro_display_id, color_hex) %>%
-    arrange(macro_display_id)
-  palette <- setNames(fill_map$color_hex, as.character(fill_map$macro_display_id))
-
-  bars_plot <- ggplot(plot_df, aes(x = publications, y = y_key)) +
-    geom_col(aes(fill = factor(macro_display_id)), width = 0.62, alpha = 0.95) +
-    scale_fill_manual(values = palette, name = "Macro") +
-    scale_x_sqrt(labels = scales::label_number(big.mark = ",", accuracy = 1)) +
-    scale_y_discrete(labels = function(x) sub("^P[0-9]+__", "", x)) +
-    facet_wrap(~panel_label, scales = "free_y", ncol = panel_cols) +
-    labs(
-      title = "Documents per Micro Cluster",
-      subtitle = sprintf(
-        "Filtered: publications >= %d; max %d micro clusters per macro; %d macro clusters per panel",
-        min_size,
-        top_per_macro,
-        macros_per_panel
-      ),
-      x = "Number of documents (sqrt scale)",
-      y = "Micro cluster"
-    ) +
-    theme_minimal(base_size = 11) +
-    theme(
-      panel.grid.minor = element_blank(),
-      panel.grid.major.y = element_blank(),
-      axis.text.y = element_text(size = 6.6),
-      strip.text = element_text(face = "bold", size = 10),
-      legend.position = "none",
-      legend.key.width = grid::unit(10, "pt"),
-      plot.title = element_text(face = "bold", size = 16),
-      plot.subtitle = element_text(size = 10)
+    out_name <- sprintf(
+      "fig_bars_%s_min%d_top%d_mpp%d.png",
+      level,
+      min_size,
+      top_per_parent,
+      macros_per_panel
     )
 
-  file_name <- sprintf(
-    "fig_micro_cluster_bars_min%d_top%d_mpp%d.png",
-    min_size,
-    top_per_macro,
-    macros_per_panel
-  )
-  output_uri <- join_s3(charts_dir, file_name)
+    out_s3 <- join_s3(level_s3_dir, out_name)
+    out_local <- file.path(level_local_dir, out_name)
 
-  width <- panel_cols * panel_width
-  height <- panel_rows * panel_height
+    save_plot_dual(
+      built$plot,
+      out_s3,
+      out_local,
+      width = width,
+      height = height,
+      dpi = dpi,
+      region = aws_region
+    )
 
-  save_plot_to_s3(bars_plot, output_uri, width = width, height = height, dpi = dpi, region = aws_region)
-
-  macro_count <- n_distinct(plot_df$macro_display_id)
-  micro_count <- nrow(plot_df)
-  cat(sprintf("[summary] macros in chart: %d\n", macro_count))
-  cat(sprintf("[summary] micro rows in chart: %d\n", micro_count))
-  cat(sprintf("[summary] panel count: %d (%d cols x %d rows)\n", panel_count, panel_cols, panel_rows))
-  cat(sprintf("[done] wrote bar chart: %s\n", output_uri))
+    cat(sprintf("[summary] level=%s rows=%d panels=%d (%d x %d)\n", level, nrow(plot_df), built$panel_count, built$panel_cols, panel_rows))
+    cat(sprintf("[done] %s\n", out_s3))
+    cat(sprintf("[done] %s\n", out_local))
+  }
 }
 
 main()

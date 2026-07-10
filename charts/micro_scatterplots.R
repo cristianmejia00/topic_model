@@ -39,6 +39,15 @@ parse_cli_args <- function(args) {
   out
 }
 
+get_script_dir <- function() {
+  all_args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- all_args[grepl("^--file=", all_args)]
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[[1]]))))
+  }
+  getwd()
+}
+
 parse_s3_uri <- function(uri) {
   if (!startsWith(uri, "s3://")) {
     stop(sprintf("Expected s3:// URI, got: %s", uri), call. = FALSE)
@@ -62,7 +71,7 @@ join_s3 <- function(base_dir, file_name) {
   sprintf("%s/%s", base, file_name)
 }
 
-read_s3_parquet_dataset <- function(dir_uri, region = NULL) {
+read_s3_parquet_dataset <- function(dir_uri, region = NULL, required = TRUE) {
   parsed <- parse_s3_uri(dir_uri)
   prefix <- sub("/*$", "", parsed$key)
   if (nzchar(prefix)) {
@@ -73,19 +82,26 @@ read_s3_parquet_dataset <- function(dir_uri, region = NULL) {
   if (!is.null(region) && nzchar(trimws(region))) {
     list_args$region <- region
   }
+
   objs <- do.call(get_bucket, list_args)
   if (length(objs) == 0) {
-    stop(sprintf("No objects found in %s", dir_uri), call. = FALSE)
+    if (required) {
+      stop(sprintf("No objects found in %s", dir_uri), call. = FALSE)
+    }
+    return(data.frame())
   }
 
   keys <- vapply(objs, function(x) x[["Key"]], character(1), USE.NAMES = FALSE)
   parquet_keys <- keys[grepl("\\.parquet$", keys)]
   if (length(parquet_keys) == 0) {
-    stop(sprintf("No parquet files found in %s", dir_uri), call. = FALSE)
+    if (required) {
+      stop(sprintf("No parquet files found in %s", dir_uri), call. = FALSE)
+    }
+    return(data.frame())
   }
 
   parts <- lapply(parquet_keys, function(obj_key) {
-    tmp_parquet <- tempfile(pattern = "micro_scatter_part_", fileext = ".parquet")
+    tmp_parquet <- tempfile(pattern = "level_scatter_part_", fileext = ".parquet")
     on.exit(unlink(tmp_parquet), add = TRUE)
 
     save_args <- list(object = obj_key, bucket = parsed$bucket, file = tmp_parquet)
@@ -114,55 +130,66 @@ pick_col <- function(df, candidates, required = FALSE) {
   NULL
 }
 
-parse_optional_numeric_arg <- function(raw_value, arg_name) {
-  if (is.null(raw_value)) {
-    return(NA_real_)
-  }
+safe_trim <- function(x) {
+  out <- trimws(as.character(x))
+  out[is.na(out)] <- ""
+  out
+}
 
+parse_positive_numeric <- function(raw_value, arg_name, default_value) {
+  if (is.null(raw_value) || !nzchar(trimws(as.character(raw_value)))) {
+    return(as.numeric(default_value))
+  }
   value <- suppressWarnings(as.numeric(raw_value))
-  if (length(value) == 0 || is.na(value) || !is.finite(value)) {
-    stop(sprintf("Invalid numeric value for --%s: %s", arg_name, as.character(raw_value)), call. = FALSE)
+  if (is.na(value) || value <= 0) {
+    stop(sprintf("Invalid positive number for --%s: %s", arg_name, as.character(raw_value)), call. = FALSE)
   }
   value
 }
 
-format_bound_for_filename <- function(value) {
-  if (is.na(value)) {
-    return(NULL)
+parse_levels <- function(raw_level) {
+  valid <- c("macro", "meso", "micro")
+  if (is.null(raw_level) || !nzchar(trimws(as.character(raw_level)))) {
+    return(valid)
   }
-  text <- format(value, trim = TRUE, scientific = FALSE)
-  # Keep filenames portable by avoiding punctuation that can be awkward in tooling.
-  text <- gsub("-", "neg", text, fixed = TRUE)
-  text <- gsub("\\.", "p", text)
-  text
+
+  tokens <- unlist(strsplit(raw_level, ",", fixed = TRUE), use.names = FALSE)
+  tokens <- trimws(tolower(tokens))
+  tokens <- tokens[tokens != ""]
+  if (length(tokens) == 0) {
+    return(valid)
+  }
+
+  bad <- tokens[!(tokens %in% valid)]
+  if (length(bad) > 0) {
+    stop(sprintf("Invalid --level value(s): %s", paste(unique(bad), collapse = ", ")), call. = FALSE)
+  }
+
+  unique(tokens)
 }
 
-build_output_suffix <- function(min_x = NA_real_, min_y = NA_real_) {
-  parts <- character(0)
-  min_x_token <- format_bound_for_filename(min_x)
-  min_y_token <- format_bound_for_filename(min_y)
-
-  if (!is.null(min_x_token) && nzchar(min_x_token)) {
-    parts <- c(parts, paste0("minx", min_x_token))
-  }
-  if (!is.null(min_y_token) && nzchar(min_y_token)) {
-    parts <- c(parts, paste0("miny", min_y_token))
-  }
-
-  if (length(parts) == 0) {
-    return("")
-  }
-  paste0("_", paste(parts, collapse = "_"))
+pick_rank_col <- function(df) {
+  candidates <- c("yearly_rank_citations", "ranked_citation_score", "ranked_citation")
+  pick_col(df, candidates, required = FALSE)
 }
 
-build_cluster_code_fallback <- function(df) {
+rank_label_from_col <- function(rank_col) {
+  if (is.null(rank_col)) {
+    return("Ranked citations")
+  }
+  labels <- list(
+    yearly_rank_citations = "Yearly rank citations",
+    ranked_citation_score = "Ranked citation score",
+    ranked_citation = "Ranked citations"
+  )
+  labels[[rank_col]] %||% "Ranked citations"
+}
+
+build_cluster_code_fallback_micro <- function(df) {
   required <- c("micro_cluster", "macro_cluster", "publications")
   missing <- required[!(required %in% names(df))]
   if (length(missing) > 0) {
-    stop(
-      sprintf("cluster_report_micro is missing required columns for fallback cluster_code: %s", paste(missing, collapse = ", ")),
-      call. = FALSE
-    )
+    return(rep("", nrow(df)))
   }
 
   rank_base <- df %>%
@@ -204,144 +231,153 @@ build_cluster_code_fallback <- function(df) {
       macro_cluster_num = suppressWarnings(as.integer(macro_cluster))
     ) %>%
     left_join(
-      micro_rank,
+      micro_rank %>% rename(fallback_cluster_code = cluster_code),
       by = c("micro_cluster_num" = "micro_cluster", "macro_cluster_num" = "macro_cluster")
     )
 
-  out$cluster_code <- ifelse(is.na(out$cluster_code), "", as.character(out$cluster_code))
-  out$cluster_code
+  out$fallback_cluster_code <- ifelse(
+    is.na(out$fallback_cluster_code),
+    "",
+    as.character(out$fallback_cluster_code)
+  )
+  out$fallback_cluster_code
 }
 
-ensure_cluster_code <- function(df) {
-  fallback <- build_cluster_code_fallback(df)
-  if (!("cluster_code" %in% names(df))) {
-    df$cluster_code <- fallback
-    return(df)
-  }
-
-  existing <- trimws(as.character(df$cluster_code))
-  # Enforce 1-based codes only (e.g. 1-1, 2-7). Any zero/invalid segment is replaced.
-  valid_nonzero <- grepl("^[1-9][0-9]*-[1-9][0-9]*$", existing)
-  needs_fill <- is.na(existing) | existing == "" | !valid_nonzero
+ensure_micro_cluster_code <- function(df) {
+  fallback <- build_cluster_code_fallback_micro(df)
+  existing <- if ("cluster_code" %in% names(df)) safe_trim(df$cluster_code) else rep("", nrow(df))
+  valid <- grepl("^[1-9][0-9]*-[1-9][0-9]*$", existing)
+  needs_fill <- existing == "" | !valid
   existing[needs_fill] <- fallback[needs_fill]
-  df$cluster_code <- existing
-  df
+  existing[is.na(existing)] <- ""
+  existing
 }
 
-add_macro_display_id <- function(df) {
-  required <- c("macro_cluster", "publications")
-  missing <- required[!(required %in% names(df))]
-  if (length(missing) > 0) {
-    stop(
-      sprintf("Missing required columns for macro display ids: %s", paste(missing, collapse = ", ")),
-      call. = FALSE
-    )
-  }
-
-  macro_map <- df %>%
-    transmute(
-      macro_cluster = suppressWarnings(as.integer(macro_cluster)),
-      publications = suppressWarnings(as.numeric(publications))
-    ) %>%
-    filter(!is.na(macro_cluster), !is.na(publications)) %>%
-    group_by(macro_cluster) %>%
-    summarise(publications = sum(publications, na.rm = TRUE), .groups = "drop") %>%
-    arrange(desc(publications), macro_cluster) %>%
-    mutate(macro_display_id = row_number()) %>%
-    select(macro_cluster, macro_display_id)
-
-  df %>%
-    mutate(macro_cluster = suppressWarnings(as.integer(macro_cluster))) %>%
-    left_join(macro_map, by = "macro_cluster")
-}
-
-rebuild_cluster_code_for_plot <- function(df) {
-  required <- c("macro_display_id", "micro_cluster", "publications")
-  missing <- required[!(required %in% names(df))]
-  if (length(missing) > 0) {
-    stop(
-      sprintf("Missing required columns to rebuild cluster_code: %s", paste(missing, collapse = ", ")),
-      call. = FALSE
-    )
-  }
-
-  code_map <- df %>%
-    transmute(
-      macro_display_id = suppressWarnings(as.integer(macro_display_id)),
-      micro_cluster = suppressWarnings(as.integer(micro_cluster)),
-      publications = suppressWarnings(as.numeric(publications))
-    ) %>%
-    filter(!is.na(macro_display_id), !is.na(micro_cluster)) %>%
-    distinct(macro_display_id, micro_cluster, .keep_all = TRUE) %>%
-    arrange(macro_display_id, desc(publications), micro_cluster) %>%
-    group_by(macro_display_id) %>%
-    mutate(micro_rank = row_number()) %>%
-    ungroup() %>%
-    mutate(cluster_code = paste0(macro_display_id, "-", micro_rank)) %>%
-    select(macro_display_id, micro_cluster, cluster_code)
-
-  df %>%
-    mutate(
-      macro_display_id = suppressWarnings(as.integer(macro_display_id)),
-      micro_cluster = suppressWarnings(as.integer(micro_cluster))
-    ) %>%
-    select(-any_of("cluster_code")) %>%
-    left_join(code_map, by = c("macro_display_id", "micro_cluster")) %>%
-    mutate(cluster_code = ifelse(is.na(cluster_code), "", cluster_code))
-}
-
-save_plot_to_s3 <- function(plot_obj, output_uri, width, height, dpi, region = NULL) {
-  tmp_png <- tempfile(pattern = "micro_scatter_", fileext = ".png")
-  on.exit(unlink(tmp_png), add = TRUE)
-
-  ggsave(
-    filename = tmp_png,
-    plot = plot_obj,
-    width = width,
-    height = height,
-    units = "in",
-    dpi = dpi,
-    bg = "white"
+prepare_level_scatter_data <- function(level, report_df, colors_df, min_size, rank_col = NULL) {
+  id_candidates <- switch(
+    level,
+    macro = c("macro_cluster", "cluster"),
+    meso = c("meso_cluster", "cluster"),
+    micro = c("micro_cluster", "cluster")
   )
 
-  parsed <- parse_s3_uri(output_uri)
-  put_args <- list(file = tmp_png, object = parsed$key, bucket = parsed$bucket)
-  if (!is.null(region) && nzchar(trimws(region))) {
-    put_args$region <- region
-  }
-  ok <- do.call(put_object, put_args)
-  if (!isTRUE(ok)) {
-    stop(sprintf("Failed to upload image to %s", output_uri), call. = FALSE)
-  }
-}
-
-build_scatter_plot <- function(df, y_col, y_label, plot_title, min_x = NA_real_, min_y = NA_real_) {
-  plot_data <- df
-  if (!is.na(min_x)) {
-    plot_data <- plot_data %>% filter(ave_py >= min_x)
-  }
-  if (!is.na(min_y)) {
-    plot_data <- plot_data %>% filter(.data[[y_col]] >= min_y)
-  }
-
-  if (nrow(plot_data) == 0) {
+  id_col <- pick_col(report_df, id_candidates, required = TRUE)
+  req <- c(id_col, "publications", "ave_py", "ave_citations")
+  missing <- req[!(req %in% names(report_df))]
+  if (length(missing) > 0) {
     stop(
-      sprintf("No rows remain for plot '%s' after applying min_x/min_y filters.", plot_title),
+      sprintf("cluster_report_%s missing required columns: %s", level, paste(missing, collapse = ", ")),
       call. = FALSE
     )
   }
 
-  color_key <- plot_data %>%
+  name_col <- pick_col(report_df, c("short_name", "name", "cluster_name"), required = FALSE)
+
+  df <- report_df %>%
+    mutate(
+      cluster_id = suppressWarnings(as.integer(.data[[id_col]])),
+      publications = suppressWarnings(as.numeric(publications)),
+      ave_py = suppressWarnings(as.numeric(ave_py)),
+      ave_citations = suppressWarnings(as.numeric(ave_citations)),
+      rank_metric = if (!is.null(rank_col)) suppressWarnings(as.numeric(.data[[rank_col]])) else NA_real_,
+      macro_parent = if ("macro_cluster" %in% names(report_df)) suppressWarnings(as.integer(macro_cluster)) else NA_integer_,
+      short_name = if (!is.null(name_col)) safe_trim(.data[[name_col]]) else "",
+      cluster_code = if ("cluster_code" %in% names(report_df)) safe_trim(cluster_code) else ""
+    ) %>%
+    filter(!is.na(cluster_id), !is.na(publications), !is.na(ave_py), !is.na(ave_citations)) %>%
+    mutate(publications = pmax(publications, 0)) %>%
+    filter(publications >= min_size)
+
+  if (nrow(df) == 0) {
+    return(data.frame())
+  }
+
+  if (level == "macro") {
+    df$macro_parent <- df$cluster_id
+  } else {
+    df$macro_parent[is.na(df$macro_parent)] <- df$cluster_id[is.na(df$macro_parent)]
+  }
+
+  df <- df %>% arrange(cluster_id, desc(publications)) %>% distinct(cluster_id, .keep_all = TRUE)
+
+  if (level == "micro") {
+    tmp_micro <- df %>%
+      transmute(
+        micro_cluster = cluster_id,
+        macro_cluster = macro_parent,
+        publications = publications,
+        cluster_code = cluster_code
+      )
+    df$cluster_code <- ensure_micro_cluster_code(tmp_micro)
+    df$cluster_code[df$cluster_code == ""] <- as.character(df$cluster_id[df$cluster_code == ""])
+  } else {
+    df <- df %>%
+      arrange(desc(publications), cluster_id) %>%
+      mutate(display_id = row_number(), cluster_code = as.character(display_id))
+  }
+
+  macro_rank <- df %>%
+    group_by(macro_parent) %>%
+    summarise(macro_publications = sum(publications, na.rm = TRUE), .groups = "drop") %>%
+    arrange(desc(macro_publications), macro_parent) %>%
+    mutate(macro_display_id = row_number())
+
+  color_map <- colors_df %>%
+    transmute(
+      macro_cluster = suppressWarnings(as.integer(macro_cluster)),
+      color_hex = safe_trim(color_hex)
+    ) %>%
+    filter(!is.na(macro_cluster), color_hex != "") %>%
+    distinct(macro_cluster, .keep_all = TRUE)
+
+  out <- df %>%
+    left_join(macro_rank, by = c("macro_parent" = "macro_parent")) %>%
+    left_join(color_map, by = c("macro_parent" = "macro_cluster")) %>%
+    mutate(
+      macro_display_id = ifelse(is.na(macro_display_id), 0L, macro_display_id),
+      color_hex = ifelse(is.na(color_hex) | color_hex == "", "#bfbfbf", color_hex),
+      label_text = ifelse(short_name == "", cluster_code, paste0(cluster_code, ". ", short_name))
+    )
+
+  out
+}
+
+build_scatter_plot <- function(
+  df,
+  level,
+  y_col = "ave_citations",
+  y_axis_label = "Average citations",
+  y_title_label = "Citations",
+  min_x = NA_real_,
+  min_y = NA_real_
+) {
+  plot_df <- df
+  if (!is.na(min_x)) {
+    plot_df <- plot_df %>% filter(ave_py >= min_x)
+  }
+  if (!is.na(min_y)) {
+    plot_df <- plot_df %>% filter(.data[[y_col]] >= min_y)
+  }
+
+  plot_df <- plot_df %>% filter(!is.na(.data[[y_col]]))
+
+  if (nrow(plot_df) == 0) {
+    stop(sprintf("No rows remain for %s scatter after filters.", level), call. = FALSE)
+  }
+
+  color_key <- plot_df %>%
     distinct(macro_display_id, color_hex) %>%
     arrange(macro_display_id)
   palette <- setNames(color_key$color_hex, as.character(color_key$macro_display_id))
 
-  ggplot(plot_data, aes(x = ave_py, y = .data[[y_col]])) +
-    geom_point(aes(color = factor(macro_display_id), size = publications), alpha = 0.72) +
+  subtitle <- sprintf("%s-level clusters, colored by parent macro cluster", tools::toTitleCase(level))
+
+  ggplot(plot_df, aes(x = ave_py, y = .data[[y_col]])) +
+    geom_point(aes(color = factor(macro_display_id), size = publications), alpha = 0.74) +
     geom_text_repel(
-      aes(label = cluster_code),
+      aes(label = label_text),
       size = 3,
-      max.overlaps = 60,
+      max.overlaps = 80,
       box.padding = 0.35,
       point.padding = 0.15,
       segment.color = "grey50",
@@ -352,13 +388,37 @@ build_scatter_plot <- function(df, y_col, y_label, plot_title, min_x = NA_real_,
     scale_size_continuous(range = c(1.4, 7), name = "Publications") +
     scale_x_continuous(breaks = scales::pretty_breaks(n = 8)) +
     labs(
-      title = plot_title,
-      subtitle = "Micro-level clusters, colored by parent macro cluster",
+      title = sprintf("%s Cluster Landscape: Publication Year vs %s", tools::toTitleCase(level), y_title_label),
+      subtitle = subtitle,
       x = "Average publication year",
-      y = y_label
+      y = y_axis_label
     ) +
     theme_minimal(base_size = 13) +
     theme(panel.grid.minor = element_blank())
+}
+
+save_plot_dual <- function(plot_obj, s3_uri, local_path, width, height, dpi, region = NULL) {
+  dir.create(dirname(local_path), recursive = TRUE, showWarnings = FALSE)
+
+  ggsave(
+    filename = local_path,
+    plot = plot_obj,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = dpi,
+    bg = "white"
+  )
+
+  parsed <- parse_s3_uri(s3_uri)
+  put_args <- list(file = local_path, object = parsed$key, bucket = parsed$bucket)
+  if (!is.null(region) && nzchar(trimws(region))) {
+    put_args$region <- region
+  }
+  ok <- do.call(put_object, put_args)
+  if (!isTRUE(ok)) {
+    stop(sprintf("Failed to upload image to %s", s3_uri), call. = FALSE)
+  }
 }
 
 main <- function() {
@@ -379,6 +439,8 @@ main <- function() {
     stop("Missing subquery. Provide --subquery or TOPIC_MODEL_SUBQUERY.", call. = FALSE)
   }
 
+  levels <- parse_levels(args[["level"]])
+
   aws_region <- args[["aws-region"]] %||%
     Sys.getenv("AWS_REGION") %||%
     Sys.getenv("AWS_DEFAULT_REGION") %||%
@@ -387,16 +449,15 @@ main <- function() {
   if (!nzchar(aws_region)) {
     aws_region <- "ap-northeast-1"
   }
-  # Keep aws.s3 calls pinned to bucket region to avoid PermanentRedirect (HTTP 301).
   Sys.setenv(AWS_REGION = aws_region, AWS_DEFAULT_REGION = aws_region)
 
-  width <- suppressWarnings(as.numeric(args[["width"]] %||% "12"))
-  height <- suppressWarnings(as.numeric(args[["height"]] %||% "7"))
-  dpi <- suppressWarnings(as.numeric(args[["dpi"]] %||% "240"))
-  min_size <- 50
-  min_x <- parse_optional_numeric_arg(args[["min_x"]] %||% args[["min-x"]], "min_x")
-  min_y <- parse_optional_numeric_arg(args[["min_y"]] %||% args[["min-y"]], "min_y")
-  output_suffix <- build_output_suffix(min_x = min_x, min_y = min_y)
+  width <- parse_positive_numeric(args[["width"]], "width", 12)
+  height <- parse_positive_numeric(args[["height"]], "height", 7)
+  dpi <- parse_positive_numeric(args[["dpi"]], "dpi", 240)
+  min_size <- parse_positive_numeric(args[["min-size"]] %||% args[["min_size"]], "min-size", 50)
+
+  script_dir <- get_script_dir()
+  repo_root <- normalizePath(file.path(script_dir, ".."), winslash = "/", mustWork = FALSE)
 
   clustering_root <- sprintf(
     "s3://openalex-results/snapshot_%s/queries/%s/network/clustering/",
@@ -404,104 +465,136 @@ main <- function() {
     query
   )
   subquery_root <- sprintf("%ssubqueries/%s/", clustering_root, subquery)
+  colors_dir <- paste0(clustering_root, "cluster_color_macro/")
 
-  micro_dir <- paste0(subquery_root, "cluster_report_micro/")
-  macro_color_dir <- paste0(clustering_root, "cluster_color_macro/")
-  charts_dir <- paste0(subquery_root, "charts/")
+  local_root <- file.path(
+    repo_root,
+    "06-subquery_reports",
+    "excel",
+    sprintf("snapshot_%s_%s", snapshot, query),
+    subquery
+  )
 
   cat(sprintf("[config] snapshot: %s\n", snapshot))
   cat(sprintf("[config] query: %s\n", query))
   cat(sprintf("[config] subquery: %s\n", subquery))
+  cat(sprintf("[config] levels: %s\n", paste(levels, collapse = ", ")))
   cat(sprintf("[config] aws region: %s\n", aws_region))
-  cat(sprintf("[config] min publications per micro: %s\n", min_size))
-  cat(sprintf("[config] min_x: %s\n", ifelse(is.na(min_x), "none", format(min_x, trim = TRUE))))
-  cat(sprintf("[config] min_y: %s\n", ifelse(is.na(min_y), "none", format(min_y, trim = TRUE))))
-  cat(sprintf("[config] output suffix: %s\n", ifelse(nzchar(output_suffix), output_suffix, "none")))
-  cat(sprintf("[config] micro source: %s\n", micro_dir))
-  cat(sprintf("[config] macro colors source: %s\n", macro_color_dir))
-  cat(sprintf("[config] output charts dir: %s\n", charts_dir))
+  cat(sprintf("[config] min publications per cluster: %.0f\n", min_size))
+  cat(sprintf("[config] local output root: %s\n", local_root))
 
-  micro <- read_s3_parquet_dataset(micro_dir, region = aws_region)
-  colors <- read_s3_parquet_dataset(macro_color_dir, region = aws_region)
-
-  required_micro <- c("micro_cluster", "macro_cluster", "publications", "ave_py", "ave_citations")
-  missing_micro <- required_micro[!(required_micro %in% names(micro))]
-  if (length(missing_micro) > 0) {
-    stop(
-      sprintf("cluster_report_micro missing required columns: %s", paste(missing_micro, collapse = ", ")),
-      call. = FALSE
-    )
-  }
-
-  rank_col <- pick_col(
-    micro,
-    c("yearly_rank_citations", "ranked_citation_score", "ranked_citation"),
-    required = TRUE
-  )
-
+  colors <- read_s3_parquet_dataset(colors_dir, region = aws_region, required = TRUE)
   if (!("macro_cluster" %in% names(colors)) || !("color_hex" %in% names(colors))) {
     stop("cluster_color_macro must contain columns: macro_cluster, color_hex", call. = FALSE)
   }
 
-  colors_norm <- colors %>%
-    transmute(
-      macro_cluster = suppressWarnings(as.integer(macro_cluster)),
-      color_hex = as.character(color_hex)
-    ) %>%
-    filter(!is.na(macro_cluster), !is.na(color_hex), trimws(color_hex) != "") %>%
-    distinct(macro_cluster, .keep_all = TRUE)
+  for (level in levels) {
+    level_report_dir <- paste0(subquery_root, "cluster_report_", level, "/")
+    level_s3_dir <- paste0(subquery_root, "charts/", level, "/")
+    level_local_dir <- file.path(local_root, level)
 
-  micro <- ensure_cluster_code(micro)
+    cat(sprintf("[level:%s] source: %s\n", level, level_report_dir))
+    cat(sprintf("[level:%s] s3 output dir: %s\n", level, level_s3_dir))
+    cat(sprintf("[level:%s] local output dir: %s\n", level, level_local_dir))
 
-  plot_df <- micro %>%
-    mutate(
-      micro_cluster = suppressWarnings(as.integer(micro_cluster)),
-      macro_cluster = suppressWarnings(as.integer(macro_cluster)),
-      publications = suppressWarnings(as.numeric(publications)),
-      ave_py = suppressWarnings(as.numeric(ave_py)),
-      ave_citations = suppressWarnings(as.numeric(ave_citations)),
-      ranked_metric = suppressWarnings(as.numeric(.data[[rank_col]])),
-      cluster_code = trimws(as.character(cluster_code))
-    ) %>%
-    left_join(colors_norm, by = "macro_cluster") %>%
-    mutate(color_hex = ifelse(is.na(color_hex), "#bfbfbf", color_hex)) %>%
-    filter(!is.na(ave_py), !is.na(ave_citations), !is.na(ranked_metric), !is.na(publications)) %>%
-    mutate(publications = pmax(publications, 0)) %>%
-    filter(publications >= min_size) %>%
-    add_macro_display_id() %>%
-    filter(!is.na(macro_display_id)) %>%
-    rebuild_cluster_code_for_plot()
+    report_df <- read_s3_parquet_dataset(level_report_dir, region = aws_region, required = TRUE)
+    rank_col <- pick_rank_col(report_df)
+    if (is.null(rank_col)) {
+      cat(sprintf("[level:%s] rank metric missing; rank scatter will be skipped\n", level))
+    } else {
+      cat(sprintf("[level:%s] rank metric column: %s\n", level, rank_col))
+    }
 
-  if (nrow(plot_df) == 0) {
-    stop("No rows remain after applying numeric cleanup and MIN_SIZE filter.", call. = FALSE)
+    plot_df <- prepare_level_scatter_data(level, report_df, colors, min_size = min_size, rank_col = rank_col)
+
+    if (nrow(plot_df) == 0) {
+      cat(sprintf("[level:%s] skipped (no rows after filters)\n", level))
+      next
+    }
+
+    default_plot <- build_scatter_plot(plot_df, level = level)
+    default_name <- sprintf("fig_scatter_%s_PY_x_Z9.png", level)
+    default_s3 <- join_s3(level_s3_dir, default_name)
+    default_local <- file.path(level_local_dir, default_name)
+
+    save_plot_dual(default_plot, default_s3, default_local, width = width, height = height, dpi = dpi, region = aws_region)
+    cat(sprintf("[done] %s\n", default_s3))
+    cat(sprintf("[done] %s\n", default_local))
+
+    has_rank <- !is.null(rank_col) && any(!is.na(plot_df$rank_metric))
+    if (has_rank) {
+      rank_plot <- build_scatter_plot(
+        plot_df,
+        level = level,
+        y_col = "rank_metric",
+        y_axis_label = rank_label_from_col(rank_col),
+        y_title_label = "Z9 Rank"
+      )
+      rank_name <- sprintf("fig_scatter_%s_PY_x_Z9_rank.png", level)
+      rank_s3 <- join_s3(level_s3_dir, rank_name)
+      rank_local <- file.path(level_local_dir, rank_name)
+
+      save_plot_dual(rank_plot, rank_s3, rank_local, width = width, height = height, dpi = dpi, region = aws_region)
+      cat(sprintf("[done] %s\n", rank_s3))
+      cat(sprintf("[done] %s\n", rank_local))
+    } else {
+      cat(sprintf("[level:%s] skipped rank scatter (no non-null rank values)\n", level))
+    }
+
+    if (level == "micro") {
+      micro_extra <- tryCatch(
+        build_scatter_plot(plot_df, level = level, min_x = 2020, min_y = 0.6),
+        error = function(e) {
+          cat(sprintf("[level:%s] skipped filtered citation scatter: %s\n", level, conditionMessage(e)))
+          NULL
+        }
+      )
+      if (!is.null(micro_extra)) {
+        extra_name <- "fig_scatter_micro_PY_x_Z9_minx2020_miny0p6.png"
+        extra_s3 <- join_s3(level_s3_dir, extra_name)
+        extra_local <- file.path(level_local_dir, extra_name)
+
+        save_plot_dual(micro_extra, extra_s3, extra_local, width = width, height = height, dpi = dpi, region = aws_region)
+        cat(sprintf("[done] %s\n", extra_s3))
+        cat(sprintf("[done] %s\n", extra_local))
+      }
+
+      if (has_rank) {
+        micro_rank_extra <- tryCatch(
+          build_scatter_plot(
+            plot_df,
+            level = level,
+            y_col = "rank_metric",
+            y_axis_label = rank_label_from_col(rank_col),
+            y_title_label = "Z9 Rank",
+            min_x = 2020,
+            min_y = 0.6
+          ),
+          error = function(e) {
+            cat(sprintf("[level:%s] skipped filtered rank scatter: %s\n", level, conditionMessage(e)))
+            NULL
+          }
+        )
+        if (!is.null(micro_rank_extra)) {
+          extra_rank_name <- "fig_scatter_micro_PY_x_Z9_rank_minx2020_miny0p6.png"
+          extra_rank_s3 <- join_s3(level_s3_dir, extra_rank_name)
+          extra_rank_local <- file.path(level_local_dir, extra_rank_name)
+
+          save_plot_dual(
+            micro_rank_extra,
+            extra_rank_s3,
+            extra_rank_local,
+            width = width,
+            height = height,
+            dpi = dpi,
+            region = aws_region
+          )
+          cat(sprintf("[done] %s\n", extra_rank_s3))
+          cat(sprintf("[done] %s\n", extra_rank_local))
+        }
+      }
+    }
   }
-
-  scatter_ave <- build_scatter_plot(
-    plot_df,
-    y_col = "ave_citations",
-    y_label = "Average citations",
-    plot_title = "Micro Cluster Landscape: Publication Year vs Citations",
-    min_x = min_x,
-    min_y = min_y
-  )
-
-  scatter_rank <- build_scatter_plot(
-    plot_df,
-    y_col = "ranked_metric",
-    y_label = sprintf("Ranked normalized citations (%s)", rank_col),
-    plot_title = "Micro Cluster Landscape: Publication Year vs Ranked Citations",
-    min_x = min_x,
-    min_y = min_y
-  )
-
-  out_ave <- join_s3(charts_dir, paste0("fig_scatter_micro_PY_x_Z9", output_suffix, ".png"))
-  out_rank <- join_s3(charts_dir, paste0("fig_scatter_micro_PY_x_Z9_rank", output_suffix, ".png"))
-
-  save_plot_to_s3(scatter_ave, out_ave, width = width, height = height, dpi = dpi, region = aws_region)
-  save_plot_to_s3(scatter_rank, out_rank, width = width, height = height, dpi = dpi, region = aws_region)
-
-  cat(sprintf("[done] wrote scatter plot: %s\n", out_ave))
-  cat(sprintf("[done] wrote scatter plot: %s\n", out_rank))
 }
 
 main()

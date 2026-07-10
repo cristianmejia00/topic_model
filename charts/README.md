@@ -2,117 +2,99 @@
 
 This folder contains four scripts:
 - two Python scripts for macro-level UMAP
-- two R scripts for micro-level micro-cluster visualizations
+- two R scripts for levelized bar/scatter visualizations (macro, meso, micro)
 
 ## What Each Script Does
 
-### 1) `build_enriched_embeddings.py`
+### 1) build_enriched_embeddings.py
 
 Builds enriched text embeddings for papers matched by a subquery.
 
 Main steps:
-- Reads matched micro clusters from:
-  - `.../subqueries/{SUBQUERY}/cluster_report_micro/`
-- Pulls candidate papers from query-level `article_report` for those micro clusters.
-- Joins macro metadata from:
-  - `cluster_name_macro/`
-  - `cluster_color_macro/`
-  - `cluster_report_macro/`
-- Builds enriched text by prepending macro name to paper text:
-  - `"{macro_name}. {title} {abstract}"`
-  - Falls back to title-only if abstract is unavailable.
-- Assigns macro `display_id` where `1` is the largest macro in the matched set.
-- Applies proportional macro-aware sampling with guaranteed macro representation,
-  capped by `--max-docs` (default: `100000`).
-- Encodes texts with SentenceTransformers and writes outputs under:
-  - `.../subqueries/{SUBQUERY}/charts/enriched_embeds/`
+- Reads matched micro clusters from subquery cluster reports.
+- Pulls candidate papers from query-level article_report for those micro clusters.
+- Joins macro metadata from cluster_name_macro, cluster_color_macro, and cluster_report_macro.
+- Builds enriched text by prepending macro name to paper text.
+- Assigns macro display order where 1 is the largest macro in the matched set.
+- Applies proportional macro-aware sampling with guaranteed macro representation.
+- Encodes texts with SentenceTransformers and writes outputs under charts/enriched_embeds.
 
-Outputs:
-- `embeddings.npy`
-- `embeddings_ids.json`
-- `sampled_records/` (parquet)
-- `macro_display/` (parquet)
-- `build_settings.json`
+### 2) umap_scatter.py
 
-### 2) `umap_scatter.py`
-
-Creates a macro-level UMAP scatter image from the enriched embeddings.
+Creates a macro-level UMAP scatter image from enriched embeddings.
 
 Main steps:
-- Reads embedding artifacts from `charts/enriched_embeds/`.
+- Reads embedding artifacts from charts/enriched_embeds.
 - Computes (or reuses cached) UMAP 2D coordinates.
-- Plots each paper as a point colored by macro color.
-- Places side labels using macro centroids and anti-overlap spacing.
-  - Labels are deterministic with a hard cap of `70` (`--max-labels`).
-- Writes chart image to:
-  - `.../subqueries/{SUBQUERY}/charts/fig_umap_scatter.png`
+- Colors points by macro color and adds deterministic side labels.
+- Writes fig_umap_scatter.png under the subquery charts folder.
 
-Subtitle in figure:
-- `{SNAPSHOT} data; x documents; y macro clusters; z micro clusters`
-- `x` is read from `enriched_embeds/build_settings.json` as pre-sample docs.
-- `y` and `z` prefer pre-sample counts from `build_settings.json`, with
-  fallback to subquery report tables if needed.
+### 3) micro_scatterplots.R
 
-Cache written by this script:
-- `.../subqueries/{SUBQUERY}/charts/enriched_embeds/umap_2d_coords.csv`
-
-### 3) `micro_scatterplots.R`
-
-Creates two micro-level scatter plots using `ggplot2` + `ggrepel`.
+Creates levelized scatter plots for macro, meso, and micro clusters.
 
 Main steps:
-- Reads subquery micro report from:
-  - `.../subqueries/{SUBQUERY}/cluster_report_micro/`
-- Reads macro colors from:
-  - `.../cluster_color_macro/`
-- Ensures labels come from `cluster_code`.
-  - If `cluster_code` is absent or empty, computes fallback labels with the
-    same deterministic logic as step-06 subquery writers.
-- Uses point color inherited from parent macro (`color_hex`).
-- Uses point size from `publications`.
-- Applies a minimum publication threshold per micro cluster (`MIN_SIZE = 50`).
-- Builds two charts:
-  - x=`ave_py`, y=`ave_citations`
-  - x=`ave_py`, y=ranked normalized citations, with priority:
-    `yearly_rank_citations` -> `ranked_citation_score` -> `ranked_citation`
+- Reads subquery cluster report datasets:
+  - cluster_report_macro
+  - cluster_report_meso
+  - cluster_report_micro
+- Reads macro colors from cluster_color_macro.
+- Uses ave_py (x), ave_citations (y), publications (size), and macro parent color.
+- Also generates PY vs Z9 rank scatters when rank metrics are available.
+  - Rank metric priority: yearly_rank_citations -> ranked_citation_score -> ranked_citation.
+- Builds stable labels from cluster_code and short_name.
+  - For micro, cluster_code is reconstructed when missing or invalid.
+  - For macro and meso, deterministic rank-based numeric cluster codes are used.
+- Applies minimum publications filtering (default 50).
+- Writes outputs to both S3 and local step-06 level folders.
 
-Outputs:
-- `.../subqueries/{SUBQUERY}/charts/fig_scatter_micro_PY_x_Z9.png`
-- `.../subqueries/{SUBQUERY}/charts/fig_scatter_micro_PY_x_Z9_rank.png`
-- If `--min_x` and/or `--min_y` are provided, output filenames include suffixes,
-  for example:
-  - `fig_scatter_micro_PY_x_Z9_minx2020_miny0p6.png`
-  - `fig_scatter_micro_PY_x_Z9_rank_minx2020_miny0p6.png`
+Outputs per level:
+- charts/{level}/fig_scatter_{level}_PY_x_Z9.png (S3)
+- charts/{level}/fig_scatter_{level}_PY_x_Z9_rank.png (S3, when rank metric exists)
+- 06-subquery_reports/excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/{level}/fig_scatter_{level}_PY_x_Z9.png (local)
+- 06-subquery_reports/excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/{level}/fig_scatter_{level}_PY_x_Z9_rank.png (local, when rank metric exists)
 
-### 4) `micro_cluster_bars.R`
+Additional micro-only output:
+- fig_scatter_micro_PY_x_Z9_minx2020_miny0p6.png
+- fig_scatter_micro_PY_x_Z9_rank_minx2020_miny0p6.png (when rank metric exists)
 
-Creates a multipanel micro-cluster bar chart for large subqueries.
+### 4) micro_cluster_bars.R
+
+Creates levelized multipanel bar charts for macro, meso, and micro clusters.
 
 Main steps:
-- Reads subquery micro report from:
-  - `.../subqueries/{SUBQUERY}/cluster_report_micro/`
-- Reads optional micro short names from:
-  - `.../subqueries/{SUBQUERY}/cluster_names/`
-- Reads macro colors from:
-  - `.../cluster_color_macro/`
-- Ensures `cluster_code` is present and non-zero-based (`1-1` style).
-  - If missing or invalid, rebuilds deterministic codes from publication ranking.
-- Filters micro clusters to `publications >= 50` (default).
-- Keeps up to 10 micro clusters per macro cluster (default).
-- Orders macro clusters by total publications (descending), then groups them into
-  panels with up to 6 macros per panel (default).
-- Uses `cluster_code + short_name` labels when short names are available.
-- Uses square-root x scaling so bars are compact but still readable.
+- Reads subquery cluster report datasets for each requested level.
+- Reads macro color palette from cluster_color_macro.
+- Reads optional cluster_names (used to improve micro labels where available).
+- Uses publications as bar length, with square-root x-axis scaling.
+- Groups bars into panels by macro display order (default 6 macros per panel).
+- For meso and micro, keeps top N clusters per macro-parent (default 10).
+- Writes outputs to both S3 and local step-06 level folders.
 
-Outputs:
-- One composite multipanel image in:
-  - `.../subqueries/{SUBQUERY}/charts/fig_micro_cluster_bars_min50_top10_mpp6.png`
+Output per level:
+- charts/{level}/fig_bars_{level}_min{MIN}_top{TOP}_mpp{MPP}.png (S3)
+- 06-subquery_reports/excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/{level}/fig_bars_{level}_min{MIN}_top{TOP}_mpp{MPP}.png (local)
+
+## Output Contract
+
+Canonical S3 root:
+- s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/network/clustering/subqueries/{SUBQUERY}/
+
+Chart outputs:
+- charts/macro/
+- charts/meso/
+- charts/micro/
+
+Local mirror root:
+- 06-subquery_reports/excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/macro/
+- 06-subquery_reports/excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/meso/
+- 06-subquery_reports/excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/micro/
 
 ## Prerequisites
 
-- Python environment with dependencies from `requirements.txt`.
-- AWS credentials with access to the relevant S3 prefixes, Athena, and Glue catalog.
-- Existing query-level and subquery-level datasets in the expected paths.
+- Python environment with dependencies from requirements.txt.
+- R packages installed: aws.s3, arrow, dplyr, ggplot2, ggrepel.
+- AWS credentials with access to the relevant S3 prefixes.
 
 ## How To Run
 
@@ -121,84 +103,67 @@ Run from repository root:
 ```bash
 /home/ubuntu/topic_model/.venv/bin/python charts/build_enriched_embeddings.py \
   --snapshot 2026-06-26 \
-  --query planetary-health \
+  --query quantum \
   --subquery everything
 
 /home/ubuntu/topic_model/.venv/bin/python charts/umap_scatter.py \
   --snapshot 2026-06-26 \
-  --query planetary-health \
+  --query quantum \
   --subquery everything
 
 Rscript charts/micro_scatterplots.R \
   --snapshot 2026-06-26 \
-  --query planetary-health \
-  --subquery everything \
-  --min_x 2020 \
-  --min_y 0.6
+  --query quantum \
+  --subquery everything
 
 Rscript charts/micro_cluster_bars.R \
   --snapshot 2026-06-26 \
-  --query planetary-health \
+  --query quantum \
   --subquery everything
-```
-
-Or run from inside `charts/`:
-
-```bash
-python build_enriched_embeddings.py --snapshot 2026-06-26 --query planetary-health --subquery everything
-python umap_scatter.py --snapshot 2026-06-26 --query planetary-health --subquery everything
-Rscript micro_scatterplots.R --snapshot 2026-06-26 --query planetary-health --subquery everything
-Rscript micro_cluster_bars.R --snapshot 2026-06-26 --query planetary-health --subquery everything
 ```
 
 ## Useful Options
 
-`build_enriched_embeddings.py`:
-- `--max-docs`: cap records to embed (default `100000`)
-- `--seed`: deterministic sampling seed
-- `--model`: SentenceTransformer model name
-- `--force`: overwrite existing `enriched_embeds/` outputs
-- `--micro-batch-size`: number of micro IDs per Athena chunk
+build_enriched_embeddings.py:
+- --max-docs
+- --seed
+- --model
+- --force
+- --micro-batch-size
 
-`umap_scatter.py`:
-- `--seed`: UMAP random seed
-- `--label-min`: minimum docs per macro to show labels
-- `--max-labels`: hard cap for macro labels (default `70`)
-- `--title`: custom chart title
-- `--force`: recompute UMAP coordinates even if cache exists
+umap_scatter.py:
+- --seed
+- --label-min
+- --max-labels
+- --title
+- --force
 
-`micro_scatterplots.R`:
-- `--snapshot`: snapshot token
-- `--query`: query token
-- `--subquery`: subquery folder
-- `--aws-region`: AWS region for S3 operations (default: `AWS_REGION`/`AWS_DEFAULT_REGION`, fallback `ap-northeast-1`)
-- `--min_x` (or `--min-x`): optional lower bound for x-axis (`ave_py`)
-- `--min_y` (or `--min-y`): optional lower bound for y-axis (applied to each plot's y metric)
-- `--width`: output width in inches (default `12`)
-- `--height`: output height in inches (default `7`)
-- `--dpi`: output DPI (default `240`)
+micro_scatterplots.R:
+- --snapshot
+- --query
+- --subquery (or --query-folder)
+- --level macro,meso,micro (default: all)
+- --aws-region (default from AWS_REGION/AWS_DEFAULT_REGION, fallback ap-northeast-1)
+- --min-size (default 50)
+- --width (default 12)
+- --height (default 7)
+- --dpi (default 240)
 
-`micro_cluster_bars.R`:
-- `--snapshot`: snapshot token
-- `--query`: query token
-- `--subquery`: subquery folder
-- `--aws-region`: AWS region for S3 operations (default: `AWS_REGION`/`AWS_DEFAULT_REGION`, fallback `ap-northeast-1`)
-- `--min-size`: minimum publications per micro cluster (default `50`)
-- `--top-per-macro`: max micro clusters shown per macro cluster (default `10`)
-- `--macros-per-panel`: max macro clusters per panel (default `6`)
-- `--panel-width`: width in inches for each panel tile in the composite image (default `8`)
-- `--panel-height`: height in inches for each panel tile in the composite image (default `6`)
-- `--dpi`: output DPI (default `240`)
+micro_cluster_bars.R:
+- --snapshot
+- --query
+- --subquery (or --query-folder)
+- --level macro,meso,micro (default: all)
+- --aws-region (default from AWS_REGION/AWS_DEFAULT_REGION, fallback ap-northeast-1)
+- --min-size (default 50)
+- --top-per-parent (aliases: --top-per-macro, --top_per_macro; default 10)
+- --macros-per-panel (default 6)
+- --panel-width (default 8)
+- --panel-height (default 6)
+- --dpi (default 240)
 
 ## Common Pitfalls
 
-- Use a normal double hyphen in CLI flags, for example `--subquery`.
-  A Unicode dash (for example `-–subquery`) will fail argument parsing.
-- If embeddings already exist and you want to rebuild, pass `--force` to
-  `build_enriched_embeddings.py`.
-- If the chart should be recomputed from scratch, pass `--force` to
-  `umap_scatter.py` to ignore cached coordinates.
-- `micro_scatterplots.R` requires R packages: `aws.s3`, `arrow`, `dplyr`,
-  `ggplot2`, `ggrepel`.
-- If you see `PermanentRedirect` / `Moved Permanently (HTTP 301)` from S3,
-  run with `--aws-region ap-northeast-1` (or set `AWS_REGION` accordingly).
+- Use a normal double hyphen in CLI flags (for example: --subquery).
+- If S3 responds with PermanentRedirect (HTTP 301), set --aws-region to the bucket region.
+- For large subqueries, bar charts can become very wide/tall. Tune panel-width, panel-height, and macros-per-panel.
