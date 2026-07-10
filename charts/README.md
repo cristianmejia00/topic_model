@@ -1,8 +1,8 @@
 # Charts Pipeline (Subquery Visuals)
 
-This folder contains three scripts:
+This folder contains four scripts:
 - two Python scripts for macro-level UMAP
-- one R script for micro-level scatter plots
+- two R scripts for micro-level micro-cluster visualizations
 
 ## What Each Script Does
 
@@ -84,6 +84,30 @@ Outputs:
   - `fig_scatter_micro_PY_x_Z9_minx2020_miny0p6.png`
   - `fig_scatter_micro_PY_x_Z9_rank_minx2020_miny0p6.png`
 
+### 4) `micro_cluster_bars.R`
+
+Creates a multipanel micro-cluster bar chart for large subqueries.
+
+Main steps:
+- Reads subquery micro report from:
+  - `.../subqueries/{SUBQUERY}/cluster_report_micro/`
+- Reads optional micro short names from:
+  - `.../subqueries/{SUBQUERY}/cluster_names/`
+- Reads macro colors from:
+  - `.../cluster_color_macro/`
+- Ensures `cluster_code` is present and non-zero-based (`1-1` style).
+  - If missing or invalid, rebuilds deterministic codes from publication ranking.
+- Filters micro clusters to `publications >= 50` (default).
+- Keeps up to 10 micro clusters per macro cluster (default).
+- Orders macro clusters by total publications (descending), then groups them into
+  panels with up to 6 macros per panel (default).
+- Uses `cluster_code + short_name` labels when short names are available.
+- Uses square-root x scaling so bars are compact but still readable.
+
+Outputs:
+- One composite multipanel image in:
+  - `.../subqueries/{SUBQUERY}/charts/fig_micro_cluster_bars_min50_top10_mpp6.png`
+
 ## Prerequisites
 
 - Python environment with dependencies from `requirements.txt`.
@@ -111,6 +135,11 @@ Rscript charts/micro_scatterplots.R \
   --subquery everything \
   --min_x 2020 \
   --min_y 0.6
+
+Rscript charts/micro_cluster_bars.R \
+  --snapshot 2026-06-26 \
+  --query planetary-health \
+  --subquery everything
 ```
 
 Or run from inside `charts/`:
@@ -119,6 +148,7 @@ Or run from inside `charts/`:
 python build_enriched_embeddings.py --snapshot 2026-06-26 --query planetary-health --subquery everything
 python umap_scatter.py --snapshot 2026-06-26 --query planetary-health --subquery everything
 Rscript micro_scatterplots.R --snapshot 2026-06-26 --query planetary-health --subquery everything
+Rscript micro_cluster_bars.R --snapshot 2026-06-26 --query planetary-health --subquery everything
 ```
 
 ## Useful Options
@@ -146,6 +176,18 @@ Rscript micro_scatterplots.R --snapshot 2026-06-26 --query planetary-health --su
 - `--min_y` (or `--min-y`): optional lower bound for y-axis (applied to each plot's y metric)
 - `--width`: output width in inches (default `12`)
 - `--height`: output height in inches (default `7`)
+- `--dpi`: output DPI (default `240`)
+
+`micro_cluster_bars.R`:
+- `--snapshot`: snapshot token
+- `--query`: query token
+- `--subquery`: subquery folder
+- `--aws-region`: AWS region for S3 operations (default: `AWS_REGION`/`AWS_DEFAULT_REGION`, fallback `ap-northeast-1`)
+- `--min-size`: minimum publications per micro cluster (default `50`)
+- `--top-per-macro`: max micro clusters shown per macro cluster (default `10`)
+- `--macros-per-panel`: max macro clusters per panel (default `6`)
+- `--panel-width`: width in inches for each panel tile in the composite image (default `8`)
+- `--panel-height`: height in inches for each panel tile in the composite image (default `6`)
 - `--dpi`: output DPI (default `240`)
 
 ## Common Pitfalls

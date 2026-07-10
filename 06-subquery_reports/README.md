@@ -44,7 +44,9 @@ Only these defaults remain:
 - `generate_subquery_html_report.py`
 	- Builds static HTML and uploads `report/` to S3.
 - `generate_subquery_excel_report.py`
-	- Builds local 4-file Excel report pack.
+	- Builds local 4-file Excel report pack with top-20 articles per micro,
+	  including `authors` and `publication_source` enrichment from query-level
+	  `nodes_query/`.
 - `generate_utokyo_subquery_excel_report.py`
 	- Builds local UTokyo-focused workbook.
 - `explore_subquery.py`
@@ -132,12 +134,24 @@ Local outputs:
 
 - HTML: `docs/{database}/{subquery}/report/index.html`
 - Excel pack:
-	- `excel/{database}/{subquery}/article_report_top10.xlsx`
+	- `excel/{database}/{subquery}/article_report_top20.xlsx`
 	- `excel/{database}/{subquery}/cluster_profiles.xlsx`
 	- `excel/{database}/{subquery}/countries_summary.xlsx`
 	- `excel/{database}/{subquery}/institutions_summary.xlsx`
 - UTokyo workbook:
 	- `utokyo/{database}/{subquery}/utokyo_cluster_and_articles.xlsx`
+
+Excel report notes:
+
+- The S3 subset `article_top10/` is still produced by step-06 search scripts.
+  The Excel exporter independently queries `article_report` to build top-20
+  article rows per micro cluster.
+- `article_report_top20.xlsx` includes `authors` and `publication_source` using
+  query-level `nodes_query/` (`s3://openalex-results/snapshot_{SNAPSHOT}/queries/{QUERY}/nodes_query/`).
+- In `cluster_profiles.xlsx` micro sheet, the exporter includes `macro_cluster_id`
+  (mapped to macro sheet `display_id`) and `cluster_code`.
+- If `cluster_code` is missing/blank/invalid in `cluster_report_micro`, the
+  exporter recomputes it with deterministic publication-based ranking.
 
 ## Quick Validation
 

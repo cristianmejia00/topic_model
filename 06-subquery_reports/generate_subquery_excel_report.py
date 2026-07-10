@@ -4,8 +4,9 @@ Outputs are written locally to:
     excel/{database}/{subquery}/
 
 Files created:
-1) article_report_top10.xlsx
-   - Top-10 papers per micro cluster with article + hierarchy IDs.
+1) article_report_top20.xlsx
+    - Top-20 papers per micro cluster with article + hierarchy IDs,
+      enriched with authors and publication source.
 2) cluster_profiles.xlsx
    - 3 sheets: micro, meso, macro cluster summaries with display/global IDs.
 3) countries_summary.xlsx
@@ -18,14 +19,19 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
+import time
 from pathlib import Path
 from typing import Any
 
 import awswrangler as wr
+import httpx
 import pandas as pd
 import pycountry
 
 ROOT = Path(__file__).resolve().parent
+OPENALEX_WORKS_URL = "https://api.openalex.org/works"
+ABSTRACTS_OPENALEX_API_FALLBACK = False
 
 from common_config import (
     DEFAULT_STAGING,
@@ -66,6 +72,15 @@ def parse_args() -> argparse.Namespace:
         "--workgroup",
         default=DEFAULT_WORKGROUP,
         help="Athena workgroup.",
+    )
+    parser.add_argument(
+        "--abstracts-openalex-api-fallback",
+        action="store_true",
+        default=ABSTRACTS_OPENALEX_API_FALLBACK,
+        help=(
+            "If set, fetch abstracts from OpenAlex API when local abstract metadata is empty. "
+            "Default is disabled."
+        ),
     )
     return parser.parse_args()
 
@@ -109,6 +124,11 @@ def iso2_to_country_name(value: Any) -> str:
     return raw
 
 
+def sanitize_excel_text(value: Any) -> str:
+    raw = sanitize_text(value)
+    return "".join(ch for ch in raw if ch in "\t\n\r" or ord(ch) >= 32)
+
+
 def run_sql(sql: str, *, database: str, staging: str, workgroup: str) -> pd.DataFrame:
     return wr.athena.read_sql_query(
         sql,
@@ -140,10 +160,275 @@ def load_macro_name_map(path: str) -> dict[int, str]:
     return dict(zip(clean["macro_cluster"], clean["name"]))
 
 
-def build_article_table(article_top10: pd.DataFrame) -> pd.DataFrame:
-    article_id_col = pick_col(article_top10, ["id", "article_id"], required=True)
-    year_col = pick_col(article_top10, ["publication_year", "year"], required=True)
-    citation_col = pick_col(article_top10, ["citations", "citation"], required=True)
+def ensure_cluster_code(df: pd.DataFrame) -> pd.DataFrame:
+    required = {"micro_cluster", "macro_cluster", "publications"}
+    missing = required - set(df.columns)
+    if missing:
+        raise KeyError(f"cluster_report_micro missing required columns for cluster_code: {sorted(missing)}")
+
+    out = df.copy()
+    rank_base = out[["micro_cluster", "macro_cluster", "publications"]].copy()
+    rank_base["micro_cluster"] = pd.to_numeric(rank_base["micro_cluster"], errors="coerce")
+    rank_base["macro_cluster"] = pd.to_numeric(rank_base["macro_cluster"], errors="coerce")
+    rank_base["publications"] = pd.to_numeric(rank_base["publications"], errors="coerce")
+    rank_base = rank_base.dropna(subset=["micro_cluster", "macro_cluster"]).copy()
+
+    if rank_base.empty:
+        out["cluster_code"] = ""
+        return out
+
+    rank_base["micro_cluster"] = rank_base["micro_cluster"].astype("int64")
+    rank_base["macro_cluster"] = rank_base["macro_cluster"].astype("int64")
+    rank_base["publications"] = rank_base["publications"].fillna(0.0)
+    rank_base = (
+        rank_base.groupby(["micro_cluster", "macro_cluster"], as_index=False)["publications"]
+        .max()
+        .fillna({"publications": 0.0})
+    )
+
+    macro_rank = (
+        rank_base.groupby("macro_cluster", as_index=False)["publications"]
+        .sum()
+        .sort_values(["publications", "macro_cluster"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    macro_rank["macro_display_id"] = range(1, len(macro_rank) + 1)
+
+    cluster_map = rank_base.sort_values(
+        ["macro_cluster", "publications", "micro_cluster"],
+        ascending=[True, False, True],
+    ).copy()
+    cluster_map["micro_rank"] = cluster_map.groupby("macro_cluster").cumcount() + 1
+    cluster_map = cluster_map.merge(
+        macro_rank[["macro_cluster", "macro_display_id"]],
+        on="macro_cluster",
+        how="left",
+    )
+    cluster_map["cluster_code"] = (
+        cluster_map["macro_display_id"].astype("int64").astype(str)
+        + "-"
+        + cluster_map["micro_rank"].astype("int64").astype(str)
+    )
+
+    mapped = cluster_map[["micro_cluster", "macro_cluster", "cluster_code"]].copy()
+    mapped["_micro_key"] = mapped["micro_cluster"].astype("int64")
+    mapped["_macro_key"] = mapped["macro_cluster"].astype("int64")
+
+    if "cluster_code" in out.columns:
+        existing = out["cluster_code"].map(sanitize_text)
+    else:
+        existing = pd.Series(["" for _ in range(len(out))], index=out.index)
+    valid_existing = existing.str.match(r"^[1-9][0-9]*-[1-9][0-9]*$", na=False)
+
+    out["_micro_key"] = pd.to_numeric(out["micro_cluster"], errors="coerce")
+    out["_macro_key"] = pd.to_numeric(out["macro_cluster"], errors="coerce")
+
+    out = out.drop(columns=["cluster_code"], errors="ignore")
+    out = out.merge(mapped[["_micro_key", "_macro_key", "cluster_code"]], on=["_micro_key", "_macro_key"], how="left")
+    fallback = out["cluster_code"].map(sanitize_text)
+    out["cluster_code"] = existing.where(valid_existing, fallback)
+
+    out = out.drop(columns=["_micro_key", "_macro_key"], errors="ignore")
+    return out
+
+
+def build_article_topn(
+    *,
+    database: str,
+    staging: str,
+    workgroup: str,
+    micro_ids: list[int],
+    top_n: int,
+) -> pd.DataFrame:
+    sql = f"""
+    SELECT id, title, citations,
+           micro_cluster, meso_cluster, macro_cluster, publication_year
+    FROM (
+        SELECT id, title, citations,
+               micro_cluster, meso_cluster, macro_cluster, publication_year,
+               ROW_NUMBER() OVER (PARTITION BY micro_cluster
+                                  ORDER BY citations DESC, id) AS rn
+        FROM article_report
+        WHERE micro_cluster IN ({in_clause(micro_ids)})
+    ) ranked
+    WHERE rn <= {int(top_n)}
+    """
+    return run_sql(sql, database=database, staging=staging, workgroup=workgroup)
+
+
+def format_authors(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        items = [sanitize_text(v) for v in value if sanitize_text(v)]
+        return "; ".join(items)
+    return sanitize_text(value)
+
+
+def format_abstract(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    if isinstance(value, dict):
+        # OpenAlex-style inverted index: {word: [pos1, pos2, ...]}.
+        tokens: list[tuple[int, str]] = []
+        for word, positions in value.items():
+            word_text = sanitize_text(word)
+            if not word_text:
+                continue
+            if not isinstance(positions, (list, tuple, set)):
+                continue
+            for pos in positions:
+                try:
+                    tokens.append((int(pos), word_text))
+                except (TypeError, ValueError):
+                    continue
+        if not tokens:
+            return ""
+        tokens.sort(key=lambda x: x[0])
+        return " ".join(word for _, word in tokens)
+    if isinstance(value, (list, tuple, set)):
+        items = [sanitize_text(v) for v in value if sanitize_text(v)]
+        return " ".join(items)
+    return sanitize_text(value)
+
+
+def normalize_openalex_work_id(value: Any) -> str | None:
+    raw = sanitize_text(value)
+    if not raw:
+        return None
+    match = re.search(r"(W\d+)", raw, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).upper()
+
+
+def fetch_openalex_abstracts(
+    article_ids: list[str],
+    *,
+    batch_size: int = 50,
+    max_retries: int = 3,
+) -> dict[str, str]:
+    work_ids = [normalize_openalex_work_id(v) for v in article_ids]
+    unique_ids = sorted({wid for wid in work_ids if wid})
+    if not unique_ids:
+        return {}
+
+    out: dict[str, str] = {}
+    total_batches = (len(unique_ids) + batch_size - 1) // batch_size
+
+    with httpx.Client(timeout=30.0, headers={"User-Agent": "topic-model-exporter/1.0"}) as client:
+        for batch_idx, start in enumerate(range(0, len(unique_ids), batch_size), start=1):
+            batch = unique_ids[start : start + batch_size]
+            filter_value = "openalex_id:" + "|".join(f"https://openalex.org/{wid}" for wid in batch)
+            params = {
+                "filter": filter_value,
+                "per-page": str(len(batch)),
+            }
+
+            response: httpx.Response | None = None
+            for attempt in range(max_retries):
+                try:
+                    response = client.get(OPENALEX_WORKS_URL, params=params)
+                except httpx.HTTPError:
+                    response = None
+
+                if response is not None and response.status_code == 200:
+                    break
+
+                if attempt + 1 < max_retries:
+                    time.sleep(1.5 * (attempt + 1))
+
+            if response is None or response.status_code != 200:
+                code = response.status_code if response is not None else "n/a"
+                print(
+                    f"[warn] OpenAlex abstract fetch failed for batch {batch_idx}/{total_batches} "
+                    f"(status={code})"
+                )
+                continue
+
+            payload = response.json()
+            for record in payload.get("results", []):
+                wid = normalize_openalex_work_id(record.get("id"))
+                if not wid:
+                    continue
+                abstract = format_abstract(record.get("abstract_inverted_index"))
+                if not abstract:
+                    abstract = format_abstract(record.get("abstract"))
+                if abstract:
+                    out[wid] = abstract
+
+            if batch_idx % 20 == 0 or batch_idx == total_batches:
+                print(
+                    f"[progress] OpenAlex abstract batches: {batch_idx}/{total_batches} "
+                    f"(filled so far: {len(out)})"
+                )
+
+    return out
+
+
+def load_nodes_metadata(nodes_query_path: str) -> pd.DataFrame:
+    try:
+        df = wr.s3.read_parquet(nodes_query_path)
+    except Exception as exc:
+        print(f"[warn] could not load nodes_query metadata at {nodes_query_path}: {exc}")
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
+    if df.empty:
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
+    id_col = pick_col(df, ["id", "article_id"], required=False)
+    if not id_col:
+        print("[warn] nodes_query metadata has no id/article_id column; authors/source enrichment skipped")
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
+    out = pd.DataFrame({"article_id": df[id_col].map(sanitize_text)})
+    if "authors" in df.columns:
+        out["authors"] = df["authors"].map(format_authors)
+    else:
+        out["authors"] = ""
+
+    if "publication_source" in df.columns:
+        out["publication_source"] = df["publication_source"].map(sanitize_text)
+    else:
+        out["publication_source"] = ""
+
+    abstract_col = pick_col(
+        df,
+        ["abstract", "abstract_text", "abstract_plaintext", "abstract_inverted_index"],
+        required=False,
+    )
+    if abstract_col:
+        out["abstract"] = df[abstract_col].map(format_abstract)
+        non_empty_abstracts = (out["abstract"].fillna("").astype(str).str.strip() != "").sum()
+        if non_empty_abstracts == 0:
+            print(
+                "[warn] nodes_query has an abstract-like column but all values are empty; "
+                "abstract in article_report_top20 will be blank"
+            )
+    else:
+        print(
+            "[warn] nodes_query has no abstract field; abstract in article_report_top20 will be blank"
+        )
+        out["abstract"] = ""
+
+    out = out[out["article_id"].astype(bool)].drop_duplicates(subset=["article_id"])
+    return out
+
+
+def build_article_table(
+    article_topn: pd.DataFrame,
+    *,
+    micro_sheet: pd.DataFrame,
+    nodes_meta: pd.DataFrame,
+    abstracts_openalex_api_fallback: bool = ABSTRACTS_OPENALEX_API_FALLBACK,
+) -> pd.DataFrame:
+    article_id_col = pick_col(article_topn, ["id", "article_id"], required=True)
+    year_col = pick_col(article_topn, ["publication_year", "year"], required=True)
+    citation_col = pick_col(article_topn, ["citations", "citation"], required=True)
 
     required = [
         article_id_col,
@@ -154,11 +439,11 @@ def build_article_table(article_top10: pd.DataFrame) -> pd.DataFrame:
         "meso_cluster",
         "macro_cluster",
     ]
-    missing = [c for c in required if c not in article_top10.columns]
+    missing = [c for c in required if c not in article_topn.columns]
     if missing:
-        raise KeyError(f"article_top10 missing columns: {missing}")
+        raise KeyError(f"article top-N rows missing columns: {missing}")
 
-    out = article_top10[required].copy()
+    out = article_topn[required].copy()
     out = out.rename(
         columns={
             article_id_col: "article_id",
@@ -170,10 +455,76 @@ def build_article_table(article_top10: pd.DataFrame) -> pd.DataFrame:
     for col in ["year", "citation", "micro_cluster", "meso_cluster", "macro_cluster"]:
         out[col] = pd.to_numeric(out[col], errors="coerce")
 
+    out["article_id"] = out["article_id"].map(sanitize_text)
+
+    if nodes_meta.empty:
+        out["authors"] = ""
+        out["publication_source"] = ""
+        out["abstract"] = ""
+    else:
+        out = out.merge(nodes_meta, on="article_id", how="left")
+        out["authors"] = out["authors"].map(format_authors)
+        out["publication_source"] = out["publication_source"].map(sanitize_text)
+        out["abstract"] = out["abstract"].map(format_abstract)
+
+    abstract_non_empty = (out["abstract"].fillna("").astype(str).str.strip() != "").sum()
+    if len(out) > 0 and abstract_non_empty == 0:
+        if abstracts_openalex_api_fallback:
+            print(
+                "[info] abstract column is empty after local enrichment; "
+                "fetching abstracts from OpenAlex API for top-20 report"
+            )
+            api_abstract_map = fetch_openalex_abstracts(out["article_id"].astype(str).tolist())
+            if api_abstract_map:
+                work_ids = out["article_id"].map(normalize_openalex_work_id)
+                fetched = work_ids.map(lambda wid: api_abstract_map.get(wid or "", ""))
+                out["abstract"] = out["abstract"].where(
+                    out["abstract"].fillna("").astype(str).str.strip().astype(bool),
+                    fetched,
+                )
+                filled = (out["abstract"].fillna("").astype(str).str.strip() != "").sum()
+                print(f"[done] abstracts populated from OpenAlex API: {int(filled)} / {len(out)}")
+            else:
+                print("[warn] OpenAlex fallback returned no abstracts; keeping blank abstract column")
+        else:
+            print(
+                "[info] abstract column is empty after local enrichment and "
+                "OpenAlex API fallback is disabled"
+            )
+
+    context_cols = [c for c in ["global_id", "cluster_code"] if c in micro_sheet.columns]
+    if context_cols:
+        context = micro_sheet[context_cols].copy()
+        if "global_id" in context.columns:
+            context = context.rename(columns={"global_id": "micro_cluster"})
+        context["micro_cluster"] = pd.to_numeric(context["micro_cluster"], errors="coerce")
+        context = context.dropna(subset=["micro_cluster"]).copy()
+        context["micro_cluster"] = context["micro_cluster"].astype("int64")
+        context = context.drop_duplicates(subset=["micro_cluster"])
+        out = out.merge(context, on="micro_cluster", how="left")
+
+    cluster_parts = out["cluster_code"].astype("string").str.extract(r"^\s*([1-9][0-9]*)-([1-9][0-9]*)\s*$")
+    out["_cluster_macro_sort"] = pd.to_numeric(cluster_parts[0], errors="coerce")
+    out["_cluster_micro_sort"] = pd.to_numeric(cluster_parts[1], errors="coerce")
+
     out = out.sort_values(
-        ["micro_cluster", "citation", "article_id"],
-        ascending=[True, False, True],
+        ["_cluster_macro_sort", "_cluster_micro_sort", "citation", "article_id"],
+        ascending=[True, True, False, True],
+        na_position="last",
     ).reset_index(drop=True)
+
+    first_cols = [
+        "cluster_code",
+        "article_id",
+        "title",
+        "abstract",
+        "year",
+        "citation",
+        "authors",
+        "publication_source",
+    ]
+    existing_first = [c for c in first_cols if c in out.columns]
+    out = out[existing_first]
     return out
 
 
@@ -296,7 +647,11 @@ def write_excel(path: Path, sheets: dict[str, pd.DataFrame]) -> None:
     try:
         with pd.ExcelWriter(path, engine="openpyxl") as writer:
             for sheet_name, df in sheets.items():
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                safe_df = df.copy()
+                object_cols = safe_df.select_dtypes(include=["object", "string"]).columns
+                for col in object_cols:
+                    safe_df[col] = safe_df[col].map(sanitize_excel_text)
+                safe_df.to_excel(writer, sheet_name=sheet_name, index=False)
                 ws = writer.sheets[sheet_name]
                 ws.freeze_panes = "A2"
                 ws.auto_filter.ref = ws.dimensions
@@ -326,18 +681,22 @@ def main() -> None:
     print("[config] query:", paths.query)
     print("[config] query_folder:", query_folder)
     print("[config] source:", out_base)
+    print("[config] nodes_query source:", f"{paths.results_root}nodes_query/")
     print("[config] output_dir:", output_dir)
     print("[config] staging:", args.staging)
     print("[config] workgroup:", args.workgroup)
+    print("[config] abstracts_openalex_api_fallback:", args.abstracts_openalex_api_fallback)
 
-    article_top10 = read_subset(out_base, "article_top10", required=True)
     micro_rep = read_subset(out_base, "cluster_report_micro", required=True)
     meso_rep = read_subset(out_base, "cluster_report_meso", required=True)
     macro_rep = read_subset(out_base, "cluster_report_macro", required=True)
     micro_names = read_subset(out_base, "cluster_names", required=False)
     macro_name_map = load_macro_name_map(paths.macro_name_path)
 
-    article_df = build_article_table(article_top10)
+    if "cluster_code" not in micro_rep.columns:
+        micro_rep["cluster_code"] = ""
+
+    micro_rep = ensure_cluster_code(micro_rep)
 
     micro_id_col = pick_col(micro_rep, ["micro_cluster", "cluster"], required=True)
     micro_pub_col = pick_col(micro_rep, ["publications"], required=True)
@@ -379,9 +738,60 @@ def main() -> None:
         tie_break_col=None,
     )
 
-    micro_ids = sorted(set(pd.to_numeric(micro_sheet[micro_id_col], errors="coerce").dropna().astype("int64").tolist()))
+    macro_global_series = pd.to_numeric(macro_sheet[macro_id_col], errors="coerce")
+    macro_display_series = pd.to_numeric(macro_sheet["display_id"], errors="coerce")
+    macro_display_map = {
+        int(k): int(v)
+        for k, v in zip(macro_global_series, macro_display_series)
+        if pd.notna(k) and pd.notna(v)
+    }
+
+    micro_macro_col = pick_col(micro_sheet, ["macro_cluster"], required=False)
+    if micro_macro_col:
+        macro_ids_for_micro = pd.to_numeric(micro_sheet[micro_macro_col], errors="coerce")
+        micro_sheet["macro_cluster_id"] = macro_ids_for_micro.map(
+            lambda x: macro_display_map.get(int(x), pd.NA) if pd.notna(x) else pd.NA
+        )
+    else:
+        micro_sheet["macro_cluster_id"] = pd.NA
+
+    if "cluster_code" not in micro_sheet.columns:
+        micro_sheet["cluster_code"] = ""
+
+    micro_first_cols = [
+        "display_id",
+        "global_id",
+        str(micro_id_col),
+        "macro_cluster_id",
+        "cluster_code",
+        "short_name",
+        "name",
+        "description",
+        str(micro_pub_col),
+    ]
+    micro_existing_first = [c for c in micro_first_cols if c in micro_sheet.columns]
+    micro_remaining = [c for c in micro_sheet.columns if c not in micro_existing_first]
+    micro_sheet = micro_sheet[micro_existing_first + micro_remaining]
+
+    micro_ids = sorted(set(pd.to_numeric(micro_sheet["global_id"], errors="coerce").dropna().astype("int64").tolist()))
     if not micro_ids:
         raise RuntimeError("No micro cluster IDs found in cluster_report_micro.")
+
+    article_topn = build_article_topn(
+        database=database,
+        staging=args.staging,
+        workgroup=args.workgroup,
+        micro_ids=micro_ids,
+        top_n=20,
+    )
+
+    nodes_meta = load_nodes_metadata(f"{paths.results_root}nodes_query/")
+    article_df = build_article_table(
+        article_topn,
+        micro_sheet=micro_sheet,
+        nodes_meta=nodes_meta,
+        abstracts_openalex_api_fallback=args.abstracts_openalex_api_fallback,
+    )
 
     countries_df = build_country_summary(
         database=database,
@@ -396,7 +806,7 @@ def main() -> None:
         micro_ids=micro_ids,
     )
 
-    article_path = output_dir / "article_report_top10.xlsx"
+    article_path = output_dir / "article_report_top20.xlsx"
     clusters_path = output_dir / "cluster_profiles.xlsx"
     countries_path = output_dir / "countries_summary.xlsx"
     institutions_path = output_dir / "institutions_summary.xlsx"
