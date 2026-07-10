@@ -8,6 +8,7 @@ SELECT
     id,
     doi,
     title,
+    abstract,
     language,
     type_openalex,
     citations,

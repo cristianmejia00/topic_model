@@ -18,9 +18,10 @@ SELECT
     authors,
     publication_year
 FROM
-    nodes_snapshot
+    nodes_partitioned
 WHERE
-    publication_year >= 1990
-    AND publication_year <= 2026
+    publication_year >= '1990' 
+    AND publication_year <= '2026' 
     AND type_openalex = 'article'
-    AND language = 'en';
+    AND language = 'en'
+    AND REGEXP_LIKE(LOWER(title), '\bsustainab');

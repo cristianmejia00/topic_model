@@ -294,7 +294,15 @@ save_plot_to_s3 <- function(plot_obj, output_uri, width, height, dpi, region = N
   tmp_png <- tempfile(pattern = "micro_scatter_", fileext = ".png")
   on.exit(unlink(tmp_png), add = TRUE)
 
-  ggsave(filename = tmp_png, plot = plot_obj, width = width, height = height, units = "in", dpi = dpi)
+  ggsave(
+    filename = tmp_png,
+    plot = plot_obj,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = dpi,
+    bg = "white"
+  )
 
   parsed <- parse_s3_uri(output_uri)
   put_args <- list(file = tmp_png, object = parsed$key, bucket = parsed$bucket)

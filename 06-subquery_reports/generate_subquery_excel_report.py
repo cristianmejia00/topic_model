@@ -1,20 +1,20 @@
-"""Generate four Excel exports for a subquery result set.
+"""Generate per-level Excel exports for a subquery result set.
 
 Outputs are written locally to:
-    excel/{database}/{subquery}/
+    excel/snapshot_{SNAPSHOT}_{QUERY}/{SUBQUERY}/{LEVEL}/
 
-Files created:
+Where LEVEL is one of: macro, meso, micro.
+
+Files created in each level folder:
 1) article_report_top20.xlsx
-    - Top-20 papers per micro cluster with article + hierarchy IDs,
-      enriched with authors and publication source.
-2) cluster_profiles.xlsx
-    - Sheets in order: info, macro, optional meso, micro.
-    - Optional meso sheet when --include-meso-sheet is provided.
-    - Includes display_id and cluster_code; excludes global_id.
+    - Top-20 papers per cluster at that level, enriched with authors and publication source.
+2) cluster_profile.xlsx
+    - Two sheets only: info and the level profile sheet.
+    - Excludes display_id from the exported level sheet.
 3) countries_summary.xlsx
-   - Per-micro country frequencies (all rows from article_report; no top-N cap).
+   - Per-cluster country frequencies at that level.
 4) institutions_summary.xlsx
-   - Per-micro institution frequencies (all rows from article_report; no top-N cap).
+   - Per-cluster institution frequencies at that level.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ import pycountry
 ROOT = Path(__file__).resolve().parent
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 ABSTRACTS_OPENALEX_API_FALLBACK = False
-INCLUDE_MESO_SHEET = False
 
 from common_config import (
     DEFAULT_STAGING,
@@ -84,12 +83,6 @@ def parse_args() -> argparse.Namespace:
             "If set, fetch abstracts from OpenAlex API when local abstract metadata is empty. "
             "Default is disabled."
         ),
-    )
-    parser.add_argument(
-        "--include-meso-sheet",
-        action="store_true",
-        default=INCLUDE_MESO_SHEET,
-        help="If set, include meso sheet in cluster_profiles.xlsx. Default is disabled.",
     )
     return parser.parse_args()
 
@@ -153,6 +146,34 @@ def run_sql(sql: str, *, database: str, staging: str, workgroup: str) -> pd.Data
 
 def in_clause(values: list[int]) -> str:
     return ", ".join(str(int(v)) for v in values)
+
+
+def sort_by_cluster_code(df: pd.DataFrame, *, level: str, extra_sort: list[tuple[str, bool]]) -> pd.DataFrame:
+    out = df.copy()
+
+    if "cluster_code" not in out.columns:
+        out["cluster_code"] = ""
+
+    if level == "micro":
+        cluster_parts = out["cluster_code"].astype("string").str.extract(r"^\s*([1-9][0-9]*)-([1-9][0-9]*)\s*$")
+        out["_cluster_macro_sort"] = pd.to_numeric(cluster_parts[0], errors="coerce")
+        out["_cluster_micro_sort"] = pd.to_numeric(cluster_parts[1], errors="coerce")
+        sort_cols = ["_cluster_macro_sort", "_cluster_micro_sort"]
+        sort_asc = [True, True]
+        drop_cols = ["_cluster_macro_sort", "_cluster_micro_sort"]
+    else:
+        out["_cluster_sort"] = pd.to_numeric(out["cluster_code"], errors="coerce")
+        sort_cols = ["_cluster_sort"]
+        sort_asc = [True]
+        drop_cols = ["_cluster_sort"]
+
+    for col, asc in extra_sort:
+        if col in out.columns:
+            sort_cols.append(col)
+            sort_asc.append(asc)
+
+    out = out.sort_values(sort_cols, ascending=sort_asc, na_position="last").reset_index(drop=True)
+    return out.drop(columns=drop_cols, errors="ignore")
 
 
 def load_macro_name_map(path: str) -> dict[int, str]:
@@ -249,19 +270,24 @@ def build_article_topn(
     database: str,
     staging: str,
     workgroup: str,
-    micro_ids: list[int],
+    cluster_col: str,
+    cluster_ids: list[int],
     top_n: int,
 ) -> pd.DataFrame:
+    if cluster_col not in {"micro_cluster", "meso_cluster", "macro_cluster"}:
+        raise ValueError(f"Unsupported cluster column: {cluster_col}")
+
     sql = f"""
     SELECT id, title, citations,
-           micro_cluster, meso_cluster, macro_cluster, publication_year
+           micro_cluster, meso_cluster, macro_cluster, publication_year,
+           {cluster_col} AS report_cluster
     FROM (
         SELECT id, title, citations,
                micro_cluster, meso_cluster, macro_cluster, publication_year,
-               ROW_NUMBER() OVER (PARTITION BY micro_cluster
+               ROW_NUMBER() OVER (PARTITION BY {cluster_col}
                                   ORDER BY citations DESC, id) AS rn
         FROM article_report
-        WHERE micro_cluster IN ({in_clause(micro_ids)})
+        WHERE {cluster_col} IN ({in_clause(cluster_ids)})
     ) ranked
     WHERE rn <= {int(top_n)}
     """
@@ -434,8 +460,10 @@ def load_nodes_metadata(nodes_query_path: str) -> pd.DataFrame:
 def build_article_table(
     article_topn: pd.DataFrame,
     *,
-    micro_sheet: pd.DataFrame,
-    micro_id_col: str,
+    level: str,
+    level_sheet: pd.DataFrame,
+    level_id_col: str,
+    level_cluster_col: str,
     nodes_meta: pd.DataFrame,
     abstracts_openalex_api_fallback: bool = ABSTRACTS_OPENALEX_API_FALLBACK,
 ) -> pd.DataFrame:
@@ -505,26 +533,22 @@ def build_article_table(
                 "OpenAlex API fallback is disabled"
             )
 
-    context_cols = [c for c in [micro_id_col, "cluster_code"] if c in micro_sheet.columns]
+    context_cols = [c for c in [level_id_col, "cluster_code"] if c in level_sheet.columns]
     if context_cols:
-        context = micro_sheet[context_cols].copy()
-        if micro_id_col in context.columns:
-            context = context.rename(columns={micro_id_col: "micro_cluster"})
-        context["micro_cluster"] = pd.to_numeric(context["micro_cluster"], errors="coerce")
-        context = context.dropna(subset=["micro_cluster"]).copy()
-        context["micro_cluster"] = context["micro_cluster"].astype("int64")
-        context = context.drop_duplicates(subset=["micro_cluster"])
-        out = out.merge(context, on="micro_cluster", how="left")
+        context = level_sheet[context_cols].copy()
+        if level_id_col in context.columns:
+            context = context.rename(columns={level_id_col: level_cluster_col})
+        context[level_cluster_col] = pd.to_numeric(context[level_cluster_col], errors="coerce")
+        context = context.dropna(subset=[level_cluster_col]).copy()
+        context[level_cluster_col] = context[level_cluster_col].astype("int64")
+        context = context.drop_duplicates(subset=[level_cluster_col])
+        out = out.merge(context, on=level_cluster_col, how="left")
 
-    cluster_parts = out["cluster_code"].astype("string").str.extract(r"^\s*([1-9][0-9]*)-([1-9][0-9]*)\s*$")
-    out["_cluster_macro_sort"] = pd.to_numeric(cluster_parts[0], errors="coerce")
-    out["_cluster_micro_sort"] = pd.to_numeric(cluster_parts[1], errors="coerce")
-
-    out = out.sort_values(
-        ["_cluster_macro_sort", "_cluster_micro_sort", "citation", "article_id"],
-        ascending=[True, True, False, True],
-        na_position="last",
-    ).reset_index(drop=True)
+    out = sort_by_cluster_code(
+        out,
+        level=level,
+        extra_sort=[("citation", False), ("article_id", True)],
+    )
 
     first_cols = [
         "cluster_code",
@@ -537,6 +561,8 @@ def build_article_table(
         "publication_source",
     ]
     existing_first = [c for c in first_cols if c in out.columns]
+    if level_cluster_col in out.columns and level_cluster_col not in existing_first:
+        existing_first.append(level_cluster_col)
     out = out[existing_first]
     return out
 
@@ -630,21 +656,31 @@ def build_cluster_table(
     return out[existing_first + remaining]
 
 
-def build_country_summary(*, database: str, staging: str, workgroup: str, micro_ids: list[int]) -> pd.DataFrame:
+def build_country_summary(
+    *,
+    database: str,
+    staging: str,
+    workgroup: str,
+    cluster_col: str,
+    cluster_ids: list[int],
+) -> pd.DataFrame:
+    if cluster_col not in {"micro_cluster", "meso_cluster", "macro_cluster"}:
+        raise ValueError(f"Unsupported cluster column: {cluster_col}")
+
     sql = f"""
     SELECT
-        micro_cluster,
+        {cluster_col} AS report_cluster,
         country,
         COUNT(*) AS freq,
         ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
         ROUND(AVG(citations), 2) AS avg_citation
     FROM article_report
     CROSS JOIN UNNEST(countries) AS t(country)
-    WHERE micro_cluster IN ({in_clause(micro_ids)})
-    GROUP BY micro_cluster, country
+    WHERE {cluster_col} IN ({in_clause(cluster_ids)})
+    GROUP BY {cluster_col}, country
     """
     out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
-    out["micro_cluster"] = pd.to_numeric(out["micro_cluster"], errors="coerce")
+    out["report_cluster"] = pd.to_numeric(out["report_cluster"], errors="coerce")
     out["freq"] = pd.to_numeric(out["freq"], errors="coerce")
     out["avg_publication_year"] = pd.to_numeric(out["avg_publication_year"], errors="coerce")
     out["avg_citation"] = pd.to_numeric(out["avg_citation"], errors="coerce")
@@ -653,21 +689,31 @@ def build_country_summary(*, database: str, staging: str, workgroup: str, micro_
     return out
 
 
-def build_institution_summary(*, database: str, staging: str, workgroup: str, micro_ids: list[int]) -> pd.DataFrame:
+def build_institution_summary(
+    *,
+    database: str,
+    staging: str,
+    workgroup: str,
+    cluster_col: str,
+    cluster_ids: list[int],
+) -> pd.DataFrame:
+    if cluster_col not in {"micro_cluster", "meso_cluster", "macro_cluster"}:
+        raise ValueError(f"Unsupported cluster column: {cluster_col}")
+
     sql = f"""
     SELECT
-        micro_cluster,
+        {cluster_col} AS report_cluster,
         institution,
         COUNT(*) AS freq,
         ROUND(AVG(TRY_CAST(publication_year AS double)), 1) AS avg_publication_year,
         ROUND(AVG(citations), 2) AS avg_citation
     FROM article_report
     CROSS JOIN UNNEST(institutions) AS t(institution)
-    WHERE micro_cluster IN ({in_clause(micro_ids)})
-    GROUP BY micro_cluster, institution
+    WHERE {cluster_col} IN ({in_clause(cluster_ids)})
+    GROUP BY {cluster_col}, institution
     """
     out = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
-    out["micro_cluster"] = pd.to_numeric(out["micro_cluster"], errors="coerce")
+    out["report_cluster"] = pd.to_numeric(out["report_cluster"], errors="coerce")
     out["freq"] = pd.to_numeric(out["freq"], errors="coerce")
     out["avg_publication_year"] = pd.to_numeric(out["avg_publication_year"], errors="coerce")
     out["avg_citation"] = pd.to_numeric(out["avg_citation"], errors="coerce")
@@ -679,26 +725,28 @@ def build_institution_summary(*, database: str, staging: str, workgroup: str, mi
 def attach_cluster_code_and_sort(
     df: pd.DataFrame,
     *,
+    level: str,
     value_col: str,
-    micro_cluster_col: str = "micro_cluster",
+    cluster_code_map: dict[int, str],
+    cluster_col: str = "report_cluster",
     cluster_code_col: str = "cluster_code",
 ) -> pd.DataFrame:
     out = df.copy()
 
-    if micro_cluster_col not in out.columns:
-        raise KeyError(f"Summary table missing required column: {micro_cluster_col}")
+    if cluster_col not in out.columns:
+        raise KeyError(f"Summary table missing required column: {cluster_col}")
 
-    cluster_parts = out[cluster_code_col].astype("string").str.extract(r"^\s*([1-9][0-9]*)-([1-9][0-9]*)\s*$")
-    out["_cluster_macro_sort"] = pd.to_numeric(cluster_parts[0], errors="coerce")
-    out["_cluster_micro_sort"] = pd.to_numeric(cluster_parts[1], errors="coerce")
+    out[cluster_code_col] = pd.to_numeric(out[cluster_col], errors="coerce").map(
+        lambda x: cluster_code_map.get(int(x), "") if pd.notna(x) else ""
+    )
 
-    out = out.sort_values(
-        ["_cluster_macro_sort", "_cluster_micro_sort", "freq", value_col],
-        ascending=[True, True, False, True],
-        na_position="last",
-    ).reset_index(drop=True)
+    out = sort_by_cluster_code(
+        out,
+        level=level,
+        extra_sort=[("freq", False), (value_col, True)],
+    )
 
-    out = out.drop(columns=["_cluster_macro_sort", "_cluster_micro_sort", micro_cluster_col], errors="ignore")
+    out = out.drop(columns=[cluster_col], errors="ignore")
 
     first_cols = [cluster_code_col, value_col, "freq", "avg_publication_year", "avg_citation"]
     existing_first = [c for c in first_cols if c in out.columns]
@@ -724,27 +772,23 @@ def write_excel(path: Path, sheets: dict[str, pd.DataFrame]) -> None:
         ) from exc
 
 
-def build_info_sheet(
+def build_level_info_sheet(
     *,
     snapshot: str,
     query: str,
     subquery: str,
+    level: str,
     documents: int,
-    macro_clusters: int,
-    micro_clusters: int,
-    include_meso_sheet: bool,
-    meso_clusters: int,
+    clusters: int,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = [
         {"item": "data", "value": f"snapshot_{snapshot}"},
         {"item": "query", "value": query},
         {"item": "subquery", "value": subquery},
+        {"item": "level", "value": level},
         {"item": "documents", "value": int(documents)},
-        {"item": "macro clusters", "value": int(macro_clusters)},
+        {"item": "clusters", "value": int(clusters)},
     ]
-    if include_meso_sheet:
-        rows.append({"item": "meso clusters", "value": int(meso_clusters)})
-    rows.append({"item": "micro clusters", "value": int(micro_clusters)})
     return pd.DataFrame(rows, columns=["item", "value"])
 
 
@@ -760,8 +804,8 @@ def main() -> None:
     query_folder = paths.subquery
 
     out_base = paths.subquery_base
-    output_dir = ROOT / "excel" / database / query_folder
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_root = ROOT / "excel" / f"snapshot_{paths.snapshot}_{paths.query}" / query_folder
+    output_root.mkdir(parents=True, exist_ok=True)
 
     print("[config] database:", database)
     print("[config] snapshot:", paths.snapshot)
@@ -769,14 +813,13 @@ def main() -> None:
     print("[config] query_folder:", query_folder)
     print("[config] source:", out_base)
     print("[config] nodes_query source:", f"{paths.results_root}nodes_query/")
-    print("[config] output_dir:", output_dir)
+    print("[config] output_root:", output_root)
     print("[config] staging:", args.staging)
     print("[config] workgroup:", args.workgroup)
     print("[config] abstracts_openalex_api_fallback:", args.abstracts_openalex_api_fallback)
-    print("[config] include_meso_sheet:", args.include_meso_sheet)
 
     micro_rep = read_subset(out_base, "cluster_report_micro", required=True)
-    meso_rep = read_subset(out_base, "cluster_report_meso", required=True) if args.include_meso_sheet else pd.DataFrame()
+    meso_rep = read_subset(out_base, "cluster_report_meso", required=True)
     macro_rep = read_subset(out_base, "cluster_report_macro", required=True)
     micro_names = read_subset(out_base, "cluster_names", required=False)
     macro_name_map = load_macro_name_map(paths.macro_name_path)
@@ -793,8 +836,8 @@ def main() -> None:
         ["yearly_rank_citations", "ranked_citation", "ranked_citation_score"],
         required=False,
     )
-    meso_id_col = pick_col(meso_rep, ["meso_cluster", "cluster"], required=True) if args.include_meso_sheet else None
-    meso_pub_col = pick_col(meso_rep, ["publications"], required=True) if args.include_meso_sheet else None
+    meso_id_col = pick_col(meso_rep, ["meso_cluster", "cluster"], required=True)
+    meso_pub_col = pick_col(meso_rep, ["publications"], required=True)
     macro_id_col = pick_col(macro_rep, ["macro_cluster", "cluster"], required=True)
     macro_pub_col = pick_col(macro_rep, ["publications"], required=True)
 
@@ -807,18 +850,14 @@ def main() -> None:
         macro_name_map=macro_name_map,
         tie_break_col=micro_rank_col,
     )
-    meso_sheet = (
-        build_cluster_table(
-            meso_rep,
-            level="meso",
-            id_col=str(meso_id_col),
-            pub_col=str(meso_pub_col),
-            micro_names=pd.DataFrame(),
-            macro_name_map=macro_name_map,
-            tie_break_col=None,
-        )
-        if args.include_meso_sheet
-        else pd.DataFrame()
+    meso_sheet = build_cluster_table(
+        meso_rep,
+        level="meso",
+        id_col=str(meso_id_col),
+        pub_col=str(meso_pub_col),
+        micro_names=pd.DataFrame(),
+        macro_name_map=macro_name_map,
+        tie_break_col=None,
     )
     macro_sheet = build_cluster_table(
         macro_rep,
@@ -855,103 +894,136 @@ def main() -> None:
     micro_remaining = [c for c in micro_sheet.columns if c not in micro_existing_first]
     micro_sheet = micro_sheet[micro_existing_first + micro_remaining]
 
-    micro_ids = sorted(set(pd.to_numeric(micro_sheet[str(micro_id_col)], errors="coerce").dropna().astype("int64").tolist()))
-    if not micro_ids:
-        raise RuntimeError("No micro cluster IDs found in cluster_report_micro.")
-
-    documents_count = int(pd.to_numeric(micro_sheet[str(micro_pub_col)], errors="coerce").fillna(0).sum())
-    macro_clusters_count = int(len(macro_sheet))
-    meso_clusters_count = int(len(meso_sheet)) if args.include_meso_sheet else 0
-    micro_clusters_count = int(len(micro_sheet))
-
-    article_topn = build_article_topn(
-        database=database,
-        staging=args.staging,
-        workgroup=args.workgroup,
-        micro_ids=micro_ids,
-        top_n=20,
-    )
-
     nodes_meta = load_nodes_metadata(f"{paths.results_root}nodes_query/")
-    article_df = build_article_table(
-        article_topn,
-        micro_sheet=micro_sheet,
-        micro_id_col=str(micro_id_col),
-        nodes_meta=nodes_meta,
-        abstracts_openalex_api_fallback=args.abstracts_openalex_api_fallback,
-    )
 
-    countries_df = build_country_summary(
-        database=database,
-        staging=args.staging,
-        workgroup=args.workgroup,
-        micro_ids=micro_ids,
-    )
-    institutions_df = build_institution_summary(
-        database=database,
-        staging=args.staging,
-        workgroup=args.workgroup,
-        micro_ids=micro_ids,
-    )
+    levels = [
+        {
+            "level": "macro",
+            "sheet_name": "macro",
+            "cluster_col": "macro_cluster",
+            "sheet": macro_sheet,
+            "id_col": str(macro_id_col),
+            "pub_col": str(macro_pub_col),
+        },
+        {
+            "level": "meso",
+            "sheet_name": "meso",
+            "cluster_col": "meso_cluster",
+            "sheet": meso_sheet,
+            "id_col": str(meso_id_col),
+            "pub_col": str(meso_pub_col),
+        },
+        {
+            "level": "micro",
+            "sheet_name": "micro",
+            "cluster_col": "micro_cluster",
+            "sheet": micro_sheet,
+            "id_col": str(micro_id_col),
+            "pub_col": str(micro_pub_col),
+        },
+    ]
 
-    micro_key = pd.to_numeric(micro_sheet[str(micro_id_col)], errors="coerce")
-    micro_code = micro_sheet["cluster_code"].map(sanitize_text)
-    micro_code_map = {
-        int(k): v
-        for k, v in zip(micro_key, micro_code)
-        if pd.notna(k) and bool(v)
-    }
+    for level_cfg in levels:
+        level = level_cfg["level"]
+        sheet_name = level_cfg["sheet_name"]
+        cluster_col = level_cfg["cluster_col"]
+        level_sheet = level_cfg["sheet"]
+        id_col = level_cfg["id_col"]
+        pub_col = level_cfg["pub_col"]
 
-    countries_df["cluster_code"] = pd.to_numeric(countries_df["micro_cluster"], errors="coerce").map(
-        lambda x: micro_code_map.get(int(x), "") if pd.notna(x) else ""
-    )
-    institutions_df["cluster_code"] = pd.to_numeric(institutions_df["micro_cluster"], errors="coerce").map(
-        lambda x: micro_code_map.get(int(x), "") if pd.notna(x) else ""
-    )
+        cluster_ids = sorted(
+            set(pd.to_numeric(level_sheet[id_col], errors="coerce").dropna().astype("int64").tolist())
+        )
+        if not cluster_ids:
+            raise RuntimeError(f"No cluster IDs found in {sheet_name} report.")
 
-    countries_df = attach_cluster_code_and_sort(countries_df, value_col="country")
-    institutions_df = attach_cluster_code_and_sort(institutions_df, value_col="institution")
+        article_topn = build_article_topn(
+            database=database,
+            staging=args.staging,
+            workgroup=args.workgroup,
+            cluster_col=cluster_col,
+            cluster_ids=cluster_ids,
+            top_n=20,
+        )
+        article_df = build_article_table(
+            article_topn,
+            level=level,
+            level_sheet=level_sheet,
+            level_id_col=id_col,
+            level_cluster_col=cluster_col,
+            nodes_meta=nodes_meta,
+            abstracts_openalex_api_fallback=args.abstracts_openalex_api_fallback,
+        )
 
-    article_path = output_dir / "article_report_top20.xlsx"
-    clusters_path = output_dir / "cluster_profiles.xlsx"
-    countries_path = output_dir / "countries_summary.xlsx"
-    institutions_path = output_dir / "institutions_summary.xlsx"
+        countries_df = build_country_summary(
+            database=database,
+            staging=args.staging,
+            workgroup=args.workgroup,
+            cluster_col=cluster_col,
+            cluster_ids=cluster_ids,
+        )
+        institutions_df = build_institution_summary(
+            database=database,
+            staging=args.staging,
+            workgroup=args.workgroup,
+            cluster_col=cluster_col,
+            cluster_ids=cluster_ids,
+        )
 
-    info_sheet = build_info_sheet(
-        snapshot=paths.snapshot,
-        query=paths.query,
-        subquery=query_folder,
-        documents=documents_count,
-        macro_clusters=macro_clusters_count,
-        micro_clusters=micro_clusters_count,
-        include_meso_sheet=args.include_meso_sheet,
-        meso_clusters=meso_clusters_count,
-    )
+        key_series = pd.to_numeric(level_sheet[id_col], errors="coerce")
+        code_series = level_sheet["cluster_code"].map(sanitize_text)
+        cluster_code_map = {
+            int(k): v
+            for k, v in zip(key_series, code_series)
+            if pd.notna(k) and bool(v)
+        }
 
-    write_excel(article_path, {"article_report": article_df})
-    cluster_sheets: dict[str, pd.DataFrame] = {
-        "info": info_sheet,
-        "macro": macro_sheet,
-    }
-    if args.include_meso_sheet:
-        cluster_sheets["meso"] = meso_sheet
-    cluster_sheets["micro"] = micro_sheet
-    write_excel(
-        clusters_path,
-        cluster_sheets,
-    )
-    write_excel(countries_path, {"countries": countries_df})
-    write_excel(institutions_path, {"institutions": institutions_df})
+        countries_df = attach_cluster_code_and_sort(
+            countries_df,
+            level=level,
+            value_col="country",
+            cluster_code_map=cluster_code_map,
+        )
+        institutions_df = attach_cluster_code_and_sort(
+            institutions_df,
+            level=level,
+            value_col="institution",
+            cluster_code_map=cluster_code_map,
+        )
 
-    print("[done] article rows:", len(article_df))
-    meso_rows = len(meso_sheet) if args.include_meso_sheet else 0
-    print("[done] micro/meso/macro rows:", len(micro_sheet), meso_rows, len(macro_sheet))
-    print("[done] countries rows:", len(countries_df))
-    print("[done] institutions rows:", len(institutions_df))
-    print("[file]", article_path)
-    print("[file]", clusters_path)
-    print("[file]", countries_path)
-    print("[file]", institutions_path)
+        documents_count = int(pd.to_numeric(level_sheet[pub_col], errors="coerce").fillna(0).sum())
+        level_clusters_count = int(len(level_sheet))
+        profile_sheet = level_sheet.drop(columns=["display_id"], errors="ignore")
+        info_sheet = build_level_info_sheet(
+            snapshot=paths.snapshot,
+            query=paths.query,
+            subquery=query_folder,
+            level=level,
+            documents=documents_count,
+            clusters=level_clusters_count,
+        )
+
+        level_dir = output_root / level
+        level_dir.mkdir(parents=True, exist_ok=True)
+
+        article_path = level_dir / "article_report_top20.xlsx"
+        cluster_path = level_dir / "cluster_profile.xlsx"
+        countries_path = level_dir / "countries_summary.xlsx"
+        institutions_path = level_dir / "institutions_summary.xlsx"
+
+        write_excel(article_path, {"article_report": article_df})
+        write_excel(cluster_path, {"info": info_sheet, sheet_name: profile_sheet})
+        write_excel(countries_path, {"countries": countries_df})
+        write_excel(institutions_path, {"institutions": institutions_df})
+
+        print(
+            f"[done] level={level} rows: article={len(article_df)} "
+            f"clusters={len(profile_sheet)} countries={len(countries_df)} institutions={len(institutions_df)}"
+        )
+        print("[file]", article_path)
+        print("[file]", cluster_path)
+        print("[file]", countries_path)
+        print("[file]", institutions_path)
 
 
 if __name__ == "__main__":

@@ -234,6 +234,7 @@ CREATE EXTERNAL TABLE IF NOT EXISTS nodes_snapshot (
     id string,
     doi string,
     title string,
+    abstract string,
     language string,
     type_openalex string,
     type_crossref string,
@@ -259,6 +260,26 @@ LOCATION '{settings.nodes_snapshot_path}'
         poll_seconds=poll_seconds,
     )
     print(f"[ok] ensured table {settings.database}.nodes_snapshot (query={qid})")
+
+    # Existing catalogs may have been created before `abstract` was required.
+    # Add it once when missing so downstream nodes_query CTAS can always select it.
+    alter_nodes_sql = "ALTER TABLE nodes_snapshot ADD COLUMNS (abstract string)"
+    try:
+        qid = run_athena_query(
+            athena,
+            sql=alter_nodes_sql,
+            staging=settings.athena_staging,
+            workgroup=settings.athena_workgroup,
+            database=settings.database,
+            poll_seconds=poll_seconds,
+        )
+        print(f"[ok] ensured column nodes_snapshot.abstract (query={qid})")
+    except RuntimeError as exc:
+        msg = str(exc)
+        if re.search(r"already exists|duplicate", msg, flags=re.IGNORECASE):
+            print("[ok] nodes_snapshot.abstract already present")
+        else:
+            raise
 
     repair_nodes_sql = "MSCK REPAIR TABLE nodes_snapshot"
     qid = run_athena_query(
