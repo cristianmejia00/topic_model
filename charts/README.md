@@ -15,6 +15,10 @@ Main steps:
 - Pulls candidate papers from query-level article_report for those micro clusters.
 - Joins macro metadata from cluster_name_macro, cluster_color_macro, and cluster_report_macro.
 - Builds enriched text by prepending macro name to paper text.
+  - Default text composition: macro name + title + abstract.
+  - Optional title-only mode: macro name + title via `--exclude-abstract-in-text`.
+  - Optional abstract backfill (off by default): `--use-abstract-fallback` to query
+    `nodes_query` and then `nodes_snapshot` by paper id when article_report abstracts are missing.
 - Assigns macro display order where 1 is the largest macro in the matched set.
 - Applies proportional macro-aware sampling with guaranteed macro representation.
 - Encodes texts with SentenceTransformers and writes outputs under charts/enriched_embeds.
@@ -130,6 +134,9 @@ build_enriched_embeddings.py:
 - --model
 - --force
 - --micro-batch-size
+- --exclude-abstract-in-text
+- --use-abstract-fallback
+- --abstract-batch-size
 
 umap_scatter.py:
 - --seed
