@@ -54,6 +54,7 @@ WITH (
 SELECT
     ns.id,
     ns.title,
+    ns.abstract,
     ns.citations,
     ns.countries,
     ns.institutions,
@@ -64,7 +65,7 @@ SELECT
 FROM louvain_clusters_txt lc
 INNER JOIN nodes_index_txt idx
     ON lc.node_id = idx.col0
-INNER JOIN nodes ns
+INNER JOIN nodes_query ns
     ON idx.col1 = ns.id
 """.strip()
 

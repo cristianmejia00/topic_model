@@ -4,6 +4,8 @@ This script:
 1) Collects all papers from query-level article_report that belong to micro clusters
    matched by a subquery.
 2) Prepends macro cluster names to paper text before embedding.
+    By default, uses only article_report abstracts.
+    Optional fallback from query-level nodes_query/nodes_snapshot can be enabled via CLI.
 3) Applies proportional stratified sampling by macro cluster with guaranteed
    macro representation and a hard cap (default 100,000).
 4) Assigns macro display IDs (1 = largest by matched-paper count).
@@ -56,6 +58,7 @@ DEFAULT_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_MAX_DOCS = 200_000
 DEFAULT_SEED = 100
 DEFAULT_MICRO_BATCH = 1000
+DEFAULT_ABSTRACT_BATCH = 2000
 
 
 @dataclass(frozen=True)
@@ -155,9 +158,25 @@ def parse_args() -> argparse.Namespace:
         help="Number of micro IDs per Athena query chunk.",
     )
     parser.add_argument(
+        "--abstract-batch-size",
+        type=int,
+        default=DEFAULT_ABSTRACT_BATCH,
+        help="Number of paper IDs per nodes_query abstract fallback chunk.",
+    )
+    parser.add_argument(
+        "--use-abstract-fallback",
+        action="store_true",
+        help="Enable fallback lookup of missing abstracts from nodes_query/nodes_snapshot.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Overwrite existing enriched_embeds outputs.",
+    )
+    parser.add_argument(
+        "--exclude-abstract-in-text",
+        action="store_true",
+        help="Build embedding text from macro name + title only (ignore abstract).",
     )
     return parser.parse_args()
 
@@ -191,6 +210,15 @@ def run_sql(sql: str, *, database: str, staging: str, workgroup: str) -> pd.Data
 def chunked(values: list[int], size: int) -> Iterable[list[int]]:
     for idx in range(0, len(values), size):
         yield values[idx : idx + size]
+
+
+def chunked_strings(values: list[str], size: int) -> Iterable[list[str]]:
+    for idx in range(0, len(values), size):
+        yield values[idx : idx + size]
+
+
+def sql_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def load_macro_lookup(paths: ChartPaths) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -342,6 +370,166 @@ def fetch_candidate_docs(
     return out
 
 
+def discover_table_id_abstract_columns(
+    *,
+    database: str,
+    staging: str,
+    workgroup: str,
+    table_name: str,
+) -> tuple[str | None, str | None]:
+    info_sql = (
+        "SELECT column_name "
+        "FROM information_schema.columns "
+        f"WHERE table_schema='{database}' AND table_name='{table_name}' "
+        "ORDER BY ordinal_position"
+    )
+    try:
+        cols_df = run_sql(info_sql, database=database, staging=staging, workgroup=workgroup)
+    except Exception:
+        cols_df = pd.DataFrame()
+
+    if cols_df.empty:
+        try:
+            cols_df = run_sql(
+                f"SHOW COLUMNS IN {table_name}",
+                database=database,
+                staging=staging,
+                workgroup=workgroup,
+            )
+        except Exception:
+            cols_df = pd.DataFrame()
+
+    if cols_df.empty or len(cols_df.columns) == 0:
+        return None, None
+
+    if "column_name" in cols_df.columns:
+        col_series = cols_df["column_name"]
+    else:
+        col_series = cols_df[cols_df.columns[0]]
+
+    available = set(col_series.astype(str).str.strip().str.lower().tolist())
+
+    def pick(*candidates: str) -> str | None:
+        for cand in candidates:
+            if cand in available:
+                return cand
+        return None
+
+    id_col = pick("id", "article_id")
+    abstract_col = pick("abstract", "abstract_text", "abstract_plaintext", "abstract_inverted_index")
+    return id_col, abstract_col
+
+
+def fetch_abstract_map_from_table(
+    *,
+    table_name: str,
+    id_col: str,
+    abstract_col: str,
+    paper_ids: list[str],
+    database: str,
+    staging: str,
+    workgroup: str,
+    batch_size: int,
+) -> dict[str, str]:
+    mapped: dict[str, str] = {}
+    for idx, id_chunk in enumerate(chunked_strings(paper_ids, batch_size), start=1):
+        in_clause = ", ".join(sql_quote(pid) for pid in id_chunk)
+        sql = f"""
+        SELECT
+            CAST({id_col} AS varchar) AS paper_id,
+            CAST({abstract_col} AS varchar) AS abstract
+        FROM {table_name}
+        WHERE {id_col} IN ({in_clause})
+          AND {abstract_col} IS NOT NULL
+          AND TRIM(CAST({abstract_col} AS varchar)) <> ''
+        """
+        fetched = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
+        if not fetched.empty:
+            fetched["paper_id"] = fetched["paper_id"].fillna("").astype(str).str.strip()
+            fetched["abstract"] = fetched["abstract"].fillna("").astype(str).str.strip()
+            fetched = fetched[(fetched["paper_id"] != "") & (fetched["abstract"] != "")]
+            for row in fetched.itertuples(index=False):
+                if row.paper_id not in mapped:
+                    mapped[row.paper_id] = row.abstract
+        if idx % 10 == 0 or idx == 1:
+            print(f"[load] {table_name} fallback chunk {idx}: mapped={len(mapped):,}")
+    return mapped
+
+
+def backfill_abstracts_from_nodes_query(
+    docs: pd.DataFrame,
+    *,
+    database: str,
+    source_database: str,
+    staging: str,
+    workgroup: str,
+    batch_size: int,
+) -> tuple[pd.DataFrame, int, int, bool]:
+    if "paper_id" not in docs.columns:
+        return docs, 0, 0, False
+
+    if "abstract" not in docs.columns:
+        docs = docs.copy()
+        docs["abstract"] = ""
+
+    docs = docs.copy()
+    docs["abstract"] = docs["abstract"].fillna("").astype(str).str.strip()
+    missing_mask = docs["abstract"] == ""
+    missing_ids = docs.loc[missing_mask, "paper_id"].dropna().astype(str).drop_duplicates().tolist()
+    if not missing_ids:
+        return docs, 0, 0, False
+
+    fallback_map: dict[str, str] = {}
+    unresolved = missing_ids
+    table_specs = [
+        ("nodes_query", database),
+        ("nodes_snapshot", source_database),
+    ]
+    for table_name, table_db in table_specs:
+        if not unresolved:
+            break
+
+        id_col, abstract_col = discover_table_id_abstract_columns(
+            database=table_db,
+            staging=staging,
+            workgroup=workgroup,
+            table_name=table_name,
+        )
+        if not id_col or not abstract_col:
+            print(f"[warn] {table_db}.{table_name} does not expose an id+abstract column pair for fallback")
+            continue
+
+        print(
+            f"[load] abstract fallback from {table_db}.{table_name} using id={id_col} "
+            f"abstract={abstract_col} for {len(unresolved):,} papers"
+        )
+
+        found = fetch_abstract_map_from_table(
+            table_name=table_name,
+            id_col=id_col,
+            abstract_col=abstract_col,
+            paper_ids=unresolved,
+            database=table_db,
+            staging=staging,
+            workgroup=workgroup,
+            batch_size=batch_size,
+        )
+        fallback_map.update(found)
+        unresolved = [pid for pid in unresolved if pid not in fallback_map]
+
+    if not fallback_map:
+        return docs, len(missing_ids), 0, True
+
+    fill_mask = docs["abstract"] == ""
+    mapped = docs.loc[fill_mask, "paper_id"].astype(str).map(fallback_map)
+    to_fill = mapped.notna() & mapped.astype(str).str.strip().ne("")
+    filled_count = int(to_fill.sum())
+    if filled_count > 0:
+        docs.loc[mapped.index[to_fill], "abstract"] = mapped[to_fill].astype(str).str.strip()
+
+    return docs, len(missing_ids), filled_count, True
+
+
 def safe_text(value: object) -> str:
     if value is None:
         return ""
@@ -468,16 +656,25 @@ def main() -> None:
         raise RuntimeError("--max-docs must be positive.")
     if args.micro_batch_size <= 0:
         raise RuntimeError("--micro-batch-size must be positive.")
+    if args.use_abstract_fallback and args.abstract_batch_size <= 0:
+        raise RuntimeError("--abstract-batch-size must be positive.")
 
     print("[config] snapshot:", snapshot)
     print("[config] query:", query)
     print("[config] subquery:", subquery)
     print("[config] database:", paths.database)
+    source_database = f"snapshot_{snapshot}"
+    print("[config] use_abstract_fallback:", args.use_abstract_fallback)
+    if args.use_abstract_fallback:
+        print("[config] source_database:", source_database)
     print("[config] staging:", args.staging)
     print("[config] workgroup:", args.workgroup)
     print("[config] model:", args.model)
     print("[config] max_docs:", args.max_docs)
     print("[config] seed:", args.seed)
+    print("[config] exclude_abstract_in_text:", args.exclude_abstract_in_text)
+    if args.use_abstract_fallback:
+        print("[config] abstract_batch_size:", args.abstract_batch_size)
     print("[config] output:", paths.enriched_root)
 
     emb_npy_path = f"{paths.enriched_root}embeddings.npy"
@@ -508,6 +705,38 @@ def main() -> None:
     )
     print(f"[load] candidate papers: {len(docs):,}")
 
+    article_report_has_abstract_col = bool(column_map.get("abstract"))
+    if "abstract" not in docs.columns:
+        docs["abstract"] = ""
+    docs["abstract"] = docs["abstract"].fillna("").astype(str).str.strip()
+    abstract_non_empty_before = int(docs["abstract"].ne("").sum())
+    abstract_missing_before = int(docs["abstract"].eq("").sum())
+
+    if args.use_abstract_fallback:
+        docs, fallback_asked, abstract_filled_from_nodes_query, nodes_query_fallback_attempted = backfill_abstracts_from_nodes_query(
+            docs,
+            database=paths.database,
+            source_database=source_database,
+            staging=args.staging,
+            workgroup=args.workgroup,
+            batch_size=args.abstract_batch_size,
+        )
+        docs["abstract"] = docs["abstract"].fillna("").astype(str).str.strip()
+        abstract_non_empty_after = int(docs["abstract"].ne("").sum())
+        print(
+            "[load] abstract coverage before/after fallback: "
+            f"{abstract_non_empty_before:,}/{len(docs):,} -> {abstract_non_empty_after:,}/{len(docs):,}"
+        )
+    else:
+        fallback_asked = 0
+        abstract_filled_from_nodes_query = 0
+        nodes_query_fallback_attempted = False
+        abstract_non_empty_after = abstract_non_empty_before
+        print(
+            "[load] abstract fallback disabled; using article_report abstracts only: "
+            f"{abstract_non_empty_after:,}/{len(docs):,} non-empty"
+        )
+
     names, colors, macro_rep = load_macro_lookup(paths)
 
     docs = docs.merge(names, on="macro_cluster", how="left")
@@ -537,12 +766,12 @@ def main() -> None:
     docs = docs.merge(macro_meta[["macro_cluster", "display_id", "macro_name"]], on="macro_cluster", how="left")
 
     title_col = "title"
-    abstract_col = "abstract" if "abstract" in docs.columns else None
+    abstract_col = "abstract"
 
     def build_text(row: pd.Series) -> str:
         macro_name = safe_text(row.get("macro_name", ""))
         title = safe_text(row.get(title_col, ""))
-        abstract = safe_text(row.get(abstract_col, "")) if abstract_col else ""
+        abstract = "" if args.exclude_abstract_in_text else safe_text(row.get(abstract_col, ""))
         body = " ".join(part for part in [title, abstract] if part).strip()
         if macro_name and body:
             return f"{macro_name}. {body}"
@@ -586,7 +815,7 @@ def main() -> None:
                 "title",
                 "text_enriched",
             ]
-            + (["abstract"] if "abstract" in sampled.columns else [])
+            + ["abstract"]
         ],
         path=f"{paths.enriched_root}sampled_records/",
         dataset=True,
@@ -620,7 +849,16 @@ def main() -> None:
         "matched_micro_clusters": int(len(matched_micro)),
         "sampled_docs": int(len(sampled)),
         "macro_count_sampled": int(sampled["macro_cluster"].nunique()),
-        "abstract_column_used": bool(abstract_col),
+        "article_report_has_abstract_column": article_report_has_abstract_col,
+        "abstract_non_empty_before_fallback": abstract_non_empty_before,
+        "abstract_missing_before_fallback": abstract_missing_before,
+        "use_abstract_fallback": bool(args.use_abstract_fallback),
+        "nodes_query_fallback_attempted": nodes_query_fallback_attempted,
+        "nodes_query_fallback_requested_ids": int(fallback_asked),
+        "abstract_filled_from_nodes_query": int(abstract_filled_from_nodes_query),
+        "abstract_non_empty_after_fallback": abstract_non_empty_after,
+        "abstract_column_used": bool(abstract_non_empty_after > 0),
+        "exclude_abstract_in_text": bool(args.exclude_abstract_in_text),
     }
     put_json_s3(f"{paths.enriched_root}build_settings.json", settings)
 
