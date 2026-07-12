@@ -410,52 +410,116 @@ def fetch_openalex_abstracts(
 
 
 def load_nodes_metadata(nodes_query_path: str) -> pd.DataFrame:
+    raise NotImplementedError("Use load_nodes_metadata_for_article_ids instead.")
+
+
+def chunked(values: list[str], size: int) -> list[list[str]]:
+    return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def sql_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def load_nodes_metadata_for_article_ids(
+    *,
+    database: str,
+    staging: str,
+    workgroup: str,
+    article_ids: list[str],
+    chunk_size: int = 1000,
+) -> pd.DataFrame:
+    wanted = sorted({sanitize_text(v) for v in article_ids if sanitize_text(v)})
+    if not wanted:
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
     try:
-        df = wr.s3.read_parquet(nodes_query_path)
-    except Exception as exc:
-        print(f"[warn] could not load nodes_query metadata at {nodes_query_path}: {exc}")
-        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
-
-    if df.empty:
-        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
-
-    id_col = pick_col(df, ["id", "article_id"], required=False)
-    if not id_col:
-        print("[warn] nodes_query metadata has no id/article_id column; authors/source enrichment skipped")
-        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
-
-    out = pd.DataFrame({"article_id": df[id_col].map(sanitize_text)})
-    if "authors" in df.columns:
-        out["authors"] = df["authors"].map(format_authors)
-    else:
-        out["authors"] = ""
-
-    if "publication_source" in df.columns:
-        out["publication_source"] = df["publication_source"].map(sanitize_text)
-    else:
-        out["publication_source"] = ""
-
-    abstract_col = pick_col(
-        df,
-        ["abstract", "abstract_text", "abstract_plaintext", "abstract_inverted_index"],
-        required=False,
-    )
-    if abstract_col:
-        out["abstract"] = df[abstract_col].map(format_abstract)
-        non_empty_abstracts = (out["abstract"].fillna("").astype(str).str.strip() != "").sum()
-        if non_empty_abstracts == 0:
-            print(
-                "[warn] nodes_query has an abstract-like column but all values are empty; "
-                "abstract in article_report_top20 will be blank"
-            )
-    else:
-        print(
-            "[warn] nodes_query has no abstract field; abstract in article_report_top20 will be blank"
+        cols_df = run_sql(
+            f"""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = {sql_quote(database)}
+              AND table_name = 'nodes_query'
+            ORDER BY ordinal_position
+            """,
+            database=database,
+            staging=staging,
+            workgroup=workgroup,
         )
+    except Exception as exc:
+        print(f"[warn] could not inspect nodes_query columns in Athena: {exc}")
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
+    col_name_col = pick_col(cols_df, ["column_name", "col_name"], required=False)
+    if not col_name_col:
+        print("[warn] unexpected SHOW COLUMNS schema for nodes_query; enrichment skipped")
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
+    available = set(cols_df[col_name_col].astype(str).str.strip().tolist())
+    id_col = "id" if "id" in available else ("article_id" if "article_id" in available else None)
+    if not id_col:
+        print("[warn] nodes_query has no id/article_id column; enrichment skipped")
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
+    authors_col = "authors" if "authors" in available else None
+    source_col = "publication_source" if "publication_source" in available else None
+    abstract_col = next(
+        (c for c in ["abstract", "abstract_text", "abstract_plaintext", "abstract_inverted_index"] if c in available),
+        None,
+    )
+
+    print(
+        "[config] nodes_query enrichment columns:",
+        {
+            "id": id_col,
+            "authors": authors_col,
+            "publication_source": source_col,
+            "abstract": abstract_col,
+        },
+    )
+
+    selects = [f"{id_col} AS article_id"]
+    selects.append(f"{authors_col} AS authors" if authors_col else "CAST(NULL AS varchar) AS authors")
+    selects.append(
+        f"{source_col} AS publication_source"
+        if source_col
+        else "CAST(NULL AS varchar) AS publication_source"
+    )
+    selects.append(f"{abstract_col} AS abstract" if abstract_col else "CAST(NULL AS varchar) AS abstract")
+
+    parts: list[pd.DataFrame] = []
+    groups = chunked(wanted, max(1, int(chunk_size)))
+    for idx, batch in enumerate(groups, start=1):
+        where_ids = ", ".join(sql_quote(v) for v in batch)
+        sql = f"""
+        SELECT {", ".join(selects)}
+        FROM nodes_query
+        WHERE {id_col} IN ({where_ids})
+        """
+        try:
+            part = run_sql(sql, database=database, staging=staging, workgroup=workgroup)
+        except Exception as exc:
+            print(f"[warn] nodes_query enrichment query failed for batch {idx}/{len(groups)}: {exc}")
+            continue
+        if not part.empty:
+            parts.append(part)
+        if idx % 10 == 0 or idx == len(groups):
+            print(f"[progress] nodes_query enrichment batches: {idx}/{len(groups)}")
+
+    if not parts:
+        return pd.DataFrame(columns=["article_id", "authors", "publication_source", "abstract"])
+
+    out = pd.concat(parts, ignore_index=True)
+    out["article_id"] = out["article_id"].map(sanitize_text)
+    if "authors" not in out.columns:
+        out["authors"] = ""
+    if "publication_source" not in out.columns:
+        out["publication_source"] = ""
+    if "abstract" not in out.columns:
         out["abstract"] = ""
 
     out = out[out["article_id"].astype(bool)].drop_duplicates(subset=["article_id"])
-    return out
+    return out[["article_id", "authors", "publication_source", "abstract"]]
 
 
 def build_article_table(
@@ -890,7 +954,7 @@ def main() -> None:
     print("[config] query:", paths.query)
     print("[config] query_folder:", query_folder)
     print("[config] source:", out_base)
-    print("[config] nodes_query source:", f"{paths.results_root}nodes_query/")
+    print("[config] nodes_query table:", "nodes_query")
     print("[config] output_root:", output_root)
     print("[config] staging:", args.staging)
     print("[config] workgroup:", args.workgroup)
@@ -973,8 +1037,6 @@ def main() -> None:
     micro_remaining = [c for c in micro_sheet.columns if c not in micro_existing_first]
     micro_sheet = micro_sheet[micro_existing_first + micro_remaining]
 
-    nodes_meta = load_nodes_metadata(f"{paths.results_root}nodes_query/")
-
     levels = [
         {
             "level": "macro",
@@ -1023,6 +1085,12 @@ def main() -> None:
             cluster_col=cluster_col,
             cluster_ids=cluster_ids,
             top_n=20,
+        )
+        nodes_meta = load_nodes_metadata_for_article_ids(
+            database=database,
+            staging=args.staging,
+            workgroup=args.workgroup,
+            article_ids=article_topn["id"].astype(str).tolist() if "id" in article_topn.columns else [],
         )
         article_df = build_article_table(
             article_topn,

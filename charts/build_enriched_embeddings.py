@@ -5,7 +5,7 @@ This script:
    matched by a subquery.
 2) Prepends macro cluster names to paper text before embedding.
     By default, uses only article_report abstracts.
-    Optional fallback from query-level nodes_query/nodes_snapshot can be enabled via CLI.
+    Optional fallback from query-level nodes_query can be enabled via CLI.
 3) Applies proportional stratified sampling by macro cluster with guaranteed
    macro representation and a hard cap (default 100,000).
 4) Assigns macro display IDs (1 = largest by matched-paper count).
@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-abstract-fallback",
         action="store_true",
-        help="Enable fallback lookup of missing abstracts from nodes_query/nodes_snapshot.",
+        help="Enable fallback lookup of missing abstracts from nodes_query.",
     )
     parser.add_argument(
         "--force",
@@ -460,7 +460,6 @@ def backfill_abstracts_from_nodes_query(
     docs: pd.DataFrame,
     *,
     database: str,
-    source_database: str,
     staging: str,
     workgroup: str,
     batch_size: int,
@@ -480,42 +479,33 @@ def backfill_abstracts_from_nodes_query(
         return docs, 0, 0, False
 
     fallback_map: dict[str, str] = {}
-    unresolved = missing_ids
-    table_specs = [
-        ("nodes_query", database),
-        ("nodes_snapshot", source_database),
-    ]
-    for table_name, table_db in table_specs:
-        if not unresolved:
-            break
 
-        id_col, abstract_col = discover_table_id_abstract_columns(
-            database=table_db,
-            staging=staging,
-            workgroup=workgroup,
-            table_name=table_name,
-        )
-        if not id_col or not abstract_col:
-            print(f"[warn] {table_db}.{table_name} does not expose an id+abstract column pair for fallback")
-            continue
+    id_col, abstract_col = discover_table_id_abstract_columns(
+        database=database,
+        staging=staging,
+        workgroup=workgroup,
+        table_name="nodes_query",
+    )
+    if not id_col or not abstract_col:
+        print(f"[warn] {database}.nodes_query does not expose an id+abstract column pair for fallback")
+        return docs, len(missing_ids), 0, True
 
-        print(
-            f"[load] abstract fallback from {table_db}.{table_name} using id={id_col} "
-            f"abstract={abstract_col} for {len(unresolved):,} papers"
-        )
+    print(
+        f"[load] abstract fallback from {database}.nodes_query using id={id_col} "
+        f"abstract={abstract_col} for {len(missing_ids):,} papers"
+    )
 
-        found = fetch_abstract_map_from_table(
-            table_name=table_name,
-            id_col=id_col,
-            abstract_col=abstract_col,
-            paper_ids=unresolved,
-            database=table_db,
-            staging=staging,
-            workgroup=workgroup,
-            batch_size=batch_size,
-        )
-        fallback_map.update(found)
-        unresolved = [pid for pid in unresolved if pid not in fallback_map]
+    found = fetch_abstract_map_from_table(
+        table_name="nodes_query",
+        id_col=id_col,
+        abstract_col=abstract_col,
+        paper_ids=missing_ids,
+        database=database,
+        staging=staging,
+        workgroup=workgroup,
+        batch_size=batch_size,
+    )
+    fallback_map.update(found)
 
     if not fallback_map:
         return docs, len(missing_ids), 0, True
@@ -663,10 +653,7 @@ def main() -> None:
     print("[config] query:", query)
     print("[config] subquery:", subquery)
     print("[config] database:", paths.database)
-    source_database = f"snapshot_{snapshot}"
     print("[config] use_abstract_fallback:", args.use_abstract_fallback)
-    if args.use_abstract_fallback:
-        print("[config] source_database:", source_database)
     print("[config] staging:", args.staging)
     print("[config] workgroup:", args.workgroup)
     print("[config] model:", args.model)
@@ -716,7 +703,6 @@ def main() -> None:
         docs, fallback_asked, abstract_filled_from_nodes_query, nodes_query_fallback_attempted = backfill_abstracts_from_nodes_query(
             docs,
             database=paths.database,
-            source_database=source_database,
             staging=args.staging,
             workgroup=args.workgroup,
             batch_size=args.abstract_batch_size,
