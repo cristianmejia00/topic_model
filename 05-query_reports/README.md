@@ -79,7 +79,7 @@ source .venv/bin/activate
 python create_glue_catalog.py \
   --snapshot 2026-06-26 \
   --query q20260629 \
-  --crawler-role AWSGlueServiceRole-openalex
+  --crawler-role AWSGlueServiceRole-nodes_crawler
 
 # 2) Optional migration for canonical source table
 python run_root_pipeline.py \
